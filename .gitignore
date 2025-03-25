@@ -1,3 +1,10 @@
+# User defined
+*.log
+./run/
+*.pth
+*.pt
+*.ckpt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
