@@ -1207,6 +1207,43 @@ class DDPM(nn.Module):
 from mamba_ssm import Mamba, Mamba2
 import torch.nn.functional as F
 
+class ExponentialMap(nn.Module):
+    def __init__(self, channels, temb_channels):
+        super().__init__()
+        self.channels = channels
+        
+        # Learn local tangent direction using linear layers
+        self.linear_tangent = nn.Linear(channels, channels)
+        self.temb_proj = nn.Linear(temb_channels, channels)
+
+    def forward(self, h, temb):
+        batch, channels, height, width = h.shape
+
+        # Project temporal embedding and combine with latent
+        temb_proj = self.temb_proj(temb)[:, :, None, None]
+        tangent_vec = self.linear_tangent((h + temb_proj).permute(0,2,3,1))  # [batch,h,w,channels]
+
+        # Compute the norm (magnitude) explicitly
+        norm = torch.norm(tangent_vec, dim=-1, keepdim=True)  # [batch,h,w,1]
+
+        # Safe normalization to obtain unit tangent direction
+        tangent_dir = tangent_vec / (norm + 1e-6)
+
+        # Direct exponential map (move along geodesic direction)
+        # exp_p(v) ≈ p + v * sin(norm)/norm (for spherical/hyperbolic geometry approximation)
+        exp_factor = torch.sin(norm) / (norm + 1e-6)  # theoretically inspired approximation
+
+        # Move along tangent direction explicitly (exp_p approximation)
+        manifold_point = h.permute(0,2,3,1) + tangent_dir * exp_factor
+
+        # Permute back to original shape [batch, channels, height, width]
+        manifold_point = manifold_point.permute(0,3,1,2)
+
+        # The delta_h (geodesic difference) is the movement vector itself
+        delta_h = manifold_point - h
+
+        return delta_h
+
 class RiemannianBlock(nn.Module):
     def __init__(self, in_channels, out_channels, temb_channels):
         super(RiemannianBlock, self).__init__()
@@ -1215,6 +1252,9 @@ class RiemannianBlock(nn.Module):
         self.temb_proj = nn.Linear(temb_channels, out_channels)
         # Layer to compute geodesic direction (instead of straight Euclidean shifts)
         self.norm1 = nn.LayerNorm(out_channels)
+        
+        # Explicitly use ExponentialMap for accurate geodesic computation
+        self.exp_map = ExponentialMap(out_channels, temb_channels)
 
     def forward(self, h, temb):
         # Reshape h to (batch_size, channels, height * width)
@@ -1232,17 +1272,18 @@ class RiemannianBlock(nn.Module):
         h_proj = h_proj.permute(0, 2, 1).view(batch_size, -1, height, width)
 
         # Geodesic distance approximation in latent space
-        delta_h = self.compute_geodesic(h_proj)
+        # delta_h = self.compute_geodesic(h_proj)
+        delta_h = self.exp_map(h_proj, temb)
 
         return delta_h
 
-    def compute_geodesic(self, h_proj):
-        # Compute the geodesic distance along the manifold
-        norm = torch.norm(h_proj, dim=1, keepdim=True)
-        geodesic_direction = h_proj / (norm + 1e-5)  # normalize
-        geodesic_magnitude = torch.log(1 + norm)  # use log map for geodesic distance
+    # def compute_geodesic(self, h_proj):
+    #     # Compute the geodesic distance along the manifold
+    #     norm = torch.norm(h_proj, dim=1, keepdim=True)
+    #     geodesic_direction = h_proj / (norm + 1e-5)  # normalize
+    #     geodesic_magnitude = torch.log(1 + norm)  # use log map for geodesic distance
         
-        return geodesic_direction * geodesic_magnitude
+    #     return geodesic_direction * geodesic_magnitude
 
 class DeltaBlock(nn.Module):
     def __init__(
@@ -1287,7 +1328,6 @@ class DeltaBlock(nn.Module):
 
             if self.layer_type == "conv":
                 self.conv1, self.conv2 = self.in_layer, self.out_layer
-                del self.in_layer, self.out_layer  # Remove redundant attributes
 
             # Enhanced Riemannian Block for advanced delta_h manipulation
             self.riemannian_block = RiemannianBlock(in_channels, out_channels, temb_channels)
@@ -1320,16 +1360,22 @@ class DeltaBlock(nn.Module):
         # # Enhanced Riemannian manifold block to compute delta_h
         # h = self.riemannian_block(h, temb)
 
-        batch, channels, height, width = h.shape
-        h_flat = h.view(batch, channels, height * width).permute(0, 2, 1)  # [batch, sequence, channels]
-        h = self.conv1(h_flat)
-        h = h.permute(0, 2, 1).view(batch, channels, height, width)
+        # batch, channels, height, width = h.shape
+        # h_flat = h.view(batch, channels, height * width).permute(0, 2, 1)  # [batch, sequence, channels]
+        # h = self.conv1(h_flat)
+        # h = h.permute(0, 2, 1).view(batch, channels, height, width)
 
-        # h = self.conv2(h)
+        # Updated Riemannian block for proper geodesic approximation
+        delta_h = self.riemannian_block(h, temb)
 
-        # return self.out_layer_final(h) 
-        return h # self.conv2(h) if self.layer_type == "conv" else self.out_layer(h)
+        # Apply the geodesic delta_h explicitly
+        h = h + delta_h
 
+        h_flat = h.view(batch, channels, -1).permute(0, 2, 1)
+        h = self.out_layer(h_flat).permute(0, 2, 1).view(batch, channels, height, width)
+
+        h = self.out_layer_final(h)
+        return h
 
 
 # # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

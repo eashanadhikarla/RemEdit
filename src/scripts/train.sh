@@ -9,14 +9,14 @@ CUDA_VISIBLE_DEVICES=$gpu
 
 python main.py  --run_train                         \
                 --config $config                    \
-                --exp ./runs/exp5/$guid             \
+                --exp ./runs/exp6/$guid             \
                 --edit_attr $guid                   \
                 --do_train 1                        \
                 --do_test 1                         \
                 --bs_train 1                        \
                 --bs_test 1                         \
                 --lr_training 0.5                   \
-                --n_train_img 1000                  \
+                --n_train_img 50                    \
                 --accumulation_steps 1              \
                 --n_test_img 32                     \
                 --n_inv_step 50                     \

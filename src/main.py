@@ -255,11 +255,13 @@ def parse_args_and_config():
 
     import shutil
     if args.run_test:
-        shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp, f"{(args.sh_file_name).split('.')[0]}_test.sh"))
+        # shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp, f"{(args.sh_file_name).split('.')[0]}_test.sh"))
+        shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp, f"{(args.sh_file_name).split('.')[0]}.sh"))
     elif args.style_transfer:
         shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp, f"{(args.sh_file_name).split('.')[0]}_style_transfer.sh"))
     elif args.run_train:
-        shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp, f"{args.sh_file_name.split('.')[0]}_train.sh"))
+        # shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp, f"{args.sh_file_name.split('.')[0]}_train.sh"))
+        shutil.copy(os.path.join('scripts', args.sh_file_name), os.path.join(args.exp, f"{args.sh_file_name.split('.')[0]}.sh"))
     elif args.lpips:
         pass
 

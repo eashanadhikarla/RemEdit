@@ -1,9 +1,11 @@
 # User defined
 *.log
-./run/
+./runs/
 *.pth
 *.pt
 *.ckpt
+src/runs/
+runs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

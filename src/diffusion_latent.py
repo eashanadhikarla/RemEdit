@@ -22,12 +22,13 @@ from losses.clip_loss import CLIPLoss
 
 # from models.ddpm.diffusion import DDPM
 # from models.ddpm.rem_diffusion import DDPM
-from models.ddpm.rem_diffusion2 import DDPM
+# from models.ddpm.rem_diffusion2 import DDPM
+from models.ddpm.rem_diffusion3 import DDPM
 
 from models.improved_ddpm.script_util import i_DDPM
 from models.improved_ddpm.nn import normalization
 from models.guided_diffusion.script_util import guided_Diffusion
-from utils.diffusion_utils import get_beta_schedule, denoising_step
+from utils.diffusion_utils import get_beta_schedule, denoising_step, denoising_step_edit
 from utils.text_dic import SRC_TRG_TXT_DIC
 from datasets.data_utils import get_dataset, get_dataloader
 from datasets.imagenet_dic import IMAGENET_DIC
@@ -332,8 +333,22 @@ class Asyrp(object):
                                 t = (torch.ones(self.args.bs_train) * i).to(self.device)
                                 t_next = (torch.ones(self.args.bs_train) * j).to(self.device)
 
-                                # step 1: Asyrp
-                                xt_next, x0_t, _, _ = denoising_step(xt_next.detach(), t=t, t_next=t_next, models=model,
+                                # # step 1: Asyrp
+                                # xt_next, x0_t, _, _ = denoising_step(xt_next.detach(), t=t, t_next=t_next, models=model,
+                                #                             logvars = self.logvar,                                        
+                                #                             b = self.betas,
+                                #                             sampling_type = self.args.sample_type,
+                                #                             eta = 0.0,
+                                #                             learn_sigma = self.learn_sigma,
+                                #                             index = 0 if not (self.args.image_space_noise_optim or self.args.image_space_noise_optim_delta_block) else None,
+                                #                             t_edit = self.t_edit,
+                                #                             hs_coeff = hs_coeff,
+                                #                             delta_h = delta_h_dict[0] if (self.args.ignore_timesteps and self.args.train_delta_h) else delta_h_dict[t[0].item()],
+                                #                             ignore_timestep = self.args.ignore_timesteps,
+                                #                         )
+                                                            # when train delta_block, delta_h is None (ignored)
+
+                                xt_next, x0_t, _, _ = denoising_step_edit(xt_next.detach(), t=t, t_next=t_next, models=model,
                                                             logvars = self.logvar,                                        
                                                             b = self.betas,
                                                             sampling_type = self.args.sample_type,
@@ -345,7 +360,7 @@ class Asyrp(object):
                                                             delta_h = delta_h_dict[0] if (self.args.ignore_timesteps and self.args.train_delta_h) else delta_h_dict[t[0].item()],
                                                             ignore_timestep = self.args.ignore_timesteps,
                                                         )
-                                                            # when train delta_block, delta_h is None (ignored)
+                                
                                 # step 2: DDIM
                                 with torch.no_grad():    
                                     x_origin, x0_t_origin, _, _ = denoising_step(x_origin.detach(), t=t, t_next=t_next, models=model,
