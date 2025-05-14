@@ -27,22 +27,21 @@ def slerp(t, v0, v1):
 
     # Dot product with the normalized vectors (can't use np.dot in W)
     dot = torch.sum(v0_copy * v1_copy, dim=1, keepdim=True).squeeze(-1)
-    # If absolute value of dot product is almost 1, vectors are ~colineal, so use lerp
-    # if torch.abs(dot) > 0.9995:
-    #     return lerp(t, v0, v1)
+
     # Calculate initial angle between v0 and v1
     theta_0 = torch.acos(dot)
     sin_theta_0 = torch.sin(theta_0)
+
     # Angle at timestep t
     theta_t = theta_0 * t
     sin_theta_t = torch.sin(theta_t)
+
     # Finish the slerp algorithm
     s0 = torch.sin(theta_0 - theta_t) / sin_theta_0
     s1 = sin_theta_t / sin_theta_0
     s0 = s0.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
     s1 = s1.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
     v2 = s0 * v0_origin + s1 * v1_origin
-    # v2 = v2.view(_shape)
     return v2
 
 
@@ -953,57 +952,10 @@ class DDPM(nn.Module):
             return h
 
 # ==================================================
-
-def nonlinearity(x):
-    # swish
-    return x * torch.sigmoid(x)
-
-def Normalize(in_channels):
-    return torch.nn.GroupNorm(
-        num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
-    )
-
-class ExponentialMap(nn.Module):
-    def __init__(self, channels, temb_channels):
-        super().__init__()
-        self.channels = channels
-        
-        # Learn local tangent direction using linear layers
-        self.linear_tangent = nn.Linear(channels, channels)
-        self.temb_proj = nn.Linear(temb_channels, channels)
-
-        # Small trainable scalar for controlling the magnitude of movement along geodesics
-        self.scale = nn.Parameter(torch.tensor(0.6))
-
-    def forward(self, h, temb):
-        batch, channels, height, width = h.shape
-
-        # Project temporal embedding and combine with latent
-        temb_proj = self.temb_proj(temb)[:, :, None, None]
-        combined_features = (h + temb_proj).permute(0, 2, 3, 1)  # [batch, height, width, channels]
-
-        tangent_vec = self.linear_tangent(combined_features)  # [batch, height, width, channels]
-
-        # Compute norm (magnitude)
-        norm = torch.norm(tangent_vec, dim=-1, keepdim=True)  # [batch, height, width, 1]
-
-        # Explicit normalization of tangent directions
-        tangent_dir = F.normalize(tangent_vec, p=2, dim=-1)
-
-        # Theoretically-driven exponential map approximation (with learned scaling)
-        # exp_factor = torch.sin(norm * self.scale) / (norm + 1e-6)
-        exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
-
-        # Move along tangent direction explicitly (exponential map)
-        manifold_point = combined_features + tangent_dir * exp_factor
-
-        # Permute back to original shape [batch, channels, height, width]
-        manifold_point = manifold_point.permute(0, 3, 1, 2)
-
-        # Compute delta_h explicitly
-        delta_h = manifold_point - h
-
-        return delta_h
+## Exponential Map code moved to another file
+# ==================================================
+# from models.ddpm.expomap import ODEExponentialMap
+from models.ddpm.expomap import ExponentialMap
 
 class RiemannianBlock(nn.Module):
     def __init__(self, in_channels, out_channels, temb_channels):
@@ -1014,8 +966,11 @@ class RiemannianBlock(nn.Module):
         self.temb_proj = nn.Linear(temb_channels, out_channels)
         self.norm1 = nn.LayerNorm(out_channels)
         
-        # ExponentialMap for accurate geodesic computation
+        # # ExponentialMap for accurate geodesic computation
         self.exp_map = ExponentialMap(out_channels, temb_channels)
+
+        # # Explicitly use ODEExponentialMap
+        # self.exp_map = ODEExponentialMap(out_channels, temb_channels)
 
     def forward(self, h, temb):
         batch_size, channels, height, width = h.shape

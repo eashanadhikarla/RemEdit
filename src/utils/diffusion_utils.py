@@ -277,6 +277,44 @@ def denoising_step_edit(xt, t, t_next, *,
 
                 return (weight_a * a_flat + weight_b * b_flat).view(shape)
 
+
+            ## LDAE: https://github.com/GabrieleLozupone/LDAE/blob/6becf9aee482ae5c9ad419444e6457cb10cf4117/scripts/interpolation_evaluation.py
+            # def slerp2(a, b, alpha):
+            #     dot = torch.dot(a.view(-1), b.view(-1)) / (torch.norm(a) * torch.norm(b))
+            #     theta = torch.arccos(dot)
+            #     sin_theta = torch.sin(theta)
+            #     return a * torch.sin((1.0 - alpha) * theta) / sin_theta + b * torch.sin(alpha * theta) / sin_theta
+
+            ## ISODiff: https://github.com/isno0907/isodiff/blob/master/ddpm_interpolation.py
+            # def slerp3(t, v0, v1, DOT_THRESHOLD=0.9995):
+            #     """helper function to spherically interpolate two arrays v1 v2"""
+            #     inputs_are_torch = isinstance(v0, torch.Tensor)
+
+            #     if inputs_are_torch:
+            #         input_device = v0.device
+            #         v0 = v0.cpu().numpy()
+            #         v1 = v1.cpu().numpy()
+            #         t = t.cpu().numpy()
+
+            #     dot = np.sum(v0 * v1 / (np.linalg.norm(v0) * np.linalg.norm(v1)))
+
+            #     if np.abs(dot) > DOT_THRESHOLD:
+            #         v2 = (1 - t) * v0 + t * v1
+            #     else:
+            #         theta_0 = np.arccos(dot)
+            #         sin_theta_0 = np.sin(theta_0)
+            #         theta_t = theta_0 * t
+            #         sin_theta_t = np.sin(theta_t)
+            #         s0 = np.sin(theta_0 - theta_t) / sin_theta_0
+            #         s1 = sin_theta_t / sin_theta_0
+            #         v2 = s0 * v0 + s1 * v1
+
+            #     if inputs_are_torch:
+            #         v2 = torch.from_numpy(v2).to(input_device)
+
+            #     return v2
+
+
             x0_t = slerp(x0_fidelity, x0_semantic, alpha)
 
         else:
@@ -304,3 +342,53 @@ def denoising_step_edit(xt, t, t_next, *,
     else:
         # will be updated
         return xt_next, x0_t, delta_h, middle_h
+
+
+
+
+# def consistency_fast_update(xt, fidelity_latent, orth_semantic_latent, alpha):
+#     """
+#     Explicitly leverage consistency to ensure fast, manifold-consistent updates.
+#     """
+#     # Combine latents explicitly with consistency assumption
+#     x0_combined = fidelity_latent + alpha * orth_semantic_latent
+
+#     # Apply consistency condition explicitly:
+#     # A single step enforcing consistency across time (simplified Euler-inspired update clearly)
+#     return xt + (x0_combined - xt).detach()  # Ensures stable gradient explicitly
+
+# def orthogonalize(u, v):
+#     '''
+#     Orthogonalize semantic latent explicitly w.r.t fidelity latent
+#     '''
+#     proj = (u * v).sum(dim=[1,2,3], keepdim=True) / (v.norm(dim=[1,2,3], keepdim=True)**2 + 1e-6)
+#     return u - proj * v
+
+# def CLO_denoising_step(xt, t, t_next, models, b, eta=0.0, 
+#                        index=None, t_edit=0, hs_coeff=(1.0,),
+#                        delta_h=None, ignore_timestep=False, alpha=0.3):
+    
+#     et, et_modified, delta_h, middle_h = models(
+#         xt, t, index=index, t_edit=t_edit,
+#         hs_coeff=hs_coeff, delta_h=delta_h,
+#         ignore_timestep=ignore_timestep
+#     )
+
+#     at = extract((1.0 - b).cumprod(dim=0), t, xt.shape)
+#     at_next = extract((1.0 - b).cumprod(dim=0), t_next, xt.shape)
+
+#     # Explicit fidelity reconstruction (identity-preserving latent)
+#     x0_fidelity = (xt - et * (1 - at).sqrt()) / at.sqrt()
+
+#     # Fully semantic edited latent
+#     x0_semantic = (xt - et_modified * (1 - at).sqrt()) / at.sqrt()
+
+#     x0_semantic_orth = orthogonalize(x0_semantic - x0_fidelity, x0_fidelity)
+
+#     # Explicit consistency-based "fast step" (using theoretical grounding)
+#     x0_t_consistent = consistency_fast_update(xt, x0_fidelity, x0_semantic_orth, alpha)
+
+#     # Explicit single-step DDIM (CLO) update
+#     xt_next = at_next.sqrt() * x0_t_consistent + (1 - at_next).sqrt() * et
+
+#     return xt_next, x0_t_consistent, delta_h, middle_h

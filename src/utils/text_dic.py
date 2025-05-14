@@ -23,8 +23,8 @@ SRC_TRG_TXT_DIC = {
 	'disgusted': (['face'],
 				  ['disgusted face']),
     'smiling': (['face'],
-                ['smiling face'],
-                ['smiling without gender change']), ########### temporarily added
+                ['smiling face']),
+                # ['smiling without gender change']), ########### temporarily added
     'blond_hair': (['person'],
                    ['person with blond hair']),
     'red_hair': (['person'],

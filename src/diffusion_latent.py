@@ -28,7 +28,7 @@ from models.ddpm.rem_diffusion3 import DDPM
 from models.improved_ddpm.script_util import i_DDPM
 from models.improved_ddpm.nn import normalization
 from models.guided_diffusion.script_util import guided_Diffusion
-from utils.diffusion_utils import get_beta_schedule, denoising_step, denoising_step_edit
+from utils.diffusion_utils import get_beta_schedule, denoising_step, denoising_step_edit #, CLO_denoising_step
 from utils.text_dic import SRC_TRG_TXT_DIC
 from datasets.data_utils import get_dataset, get_dataloader
 from datasets.imagenet_dic import IMAGENET_DIC
@@ -361,6 +361,17 @@ class Asyrp(object):
                                                             ignore_timestep = self.args.ignore_timesteps,
                                                         )
                                 
+                                # xt_next, x0_t, _, _ = CLO_denoising_step(
+                                #                             xt_next.detach(), t=t, t_next=t_next, models=model,
+                                #                             b=self.betas, eta=0.0,
+                                #                             index=0 if not (self.args.image_space_noise_optim or self.args.image_space_noise_optim_delta_block) else None,
+                                #                             t_edit=self.t_edit,
+                                #                             hs_coeff=hs_coeff,
+                                #                             delta_h=delta_h_dict[0] if (self.args.ignore_timesteps and self.args.train_delta_h) else delta_h_dict[t[0].item()],
+                                #                             ignore_timestep=self.args.ignore_timesteps,
+                                #                             alpha=0.3  # explicit tunable parameter clearly
+                                #                         )
+                                
                                 # step 2: DDIM
                                 with torch.no_grad():    
                                     x_origin, x0_t_origin, _, _ = denoising_step(x_origin.detach(), t=t, t_next=t_next, models=model,
@@ -398,7 +409,7 @@ class Asyrp(object):
                                 total_l1_loss += self.args.l1_loss_w * loss_l1 * cosine
 
                                 loss.backward()
-                                progress_bar.set_description(f"{step}-{it_out}: loss_clr: {loss_clr:.3f} loss_l1: {loss_l1:.3f} loss_id: {loss_id:.3f} loss_clip:{loss_clip} loss: {loss:.3f} mean accumulated_loss: {np.mean(accumulated_loss):.3f}")
+                                progress_bar.set_description(f"{step}-{it_out}: Loss (CLR): {loss_clr:.4f} | Loss (L1): {loss_l1:.4f} | Loss (ID): {loss_id:.4f} | Loss (CLIP): {loss_clip:.4f}\nTotal Loss: {loss:.4f} | Mean Accumulated Loss: {np.mean(accumulated_loss):.4f}")
 
                                 if ((t_it + 1) % self.accumulation_steps == 0) or (t_it + 1 == len(seq_train)):
                                     optim_ft.step()
@@ -430,7 +441,7 @@ class Asyrp(object):
                             torch.save(dicts, save_name_tmp)
                             print(f'Model {save_name_tmp} is saved.')
                             save_model_iter_from_noise += 1
-                             
+
                         time_in_end = time.time()
                         print(f"Training for 1 step {time_in_end - time_in_start:.4f}s")
                         if step == self.args.n_train_img - 1:
@@ -448,7 +459,7 @@ class Asyrp(object):
                     if self.args.train_delta_h:
                         for key in delta_h_dict.keys():
                             dicts[f"{key}"] = delta_h_dict[key]
-                    
+
                     dicts["optimizer"] = optim_ft.state_dict()
                     dicts["scheduler"] = scheduler_ft.state_dict()
                     torch.save(dicts, save_name)
@@ -483,7 +494,7 @@ class Asyrp(object):
                                             folder_dir=self.args.test_image_folder,
                                             file_name=f'test_{step}_{self.args.n_iter - 1}', hs_coeff=hs_coeff,
                                             )
-        
+
                 if step == self.args.n_test_img - 1:
                     break
                 save_image_iter += 1
