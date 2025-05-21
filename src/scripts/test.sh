@@ -12,12 +12,12 @@ degree=0.9
 
 python main.py  --run_test                              \
                 --config $config                        \
-                --exp ./runs/exp9/${guid}               \
+                --exp ./runs/exp14/${guid}               \
                 --edit_attr $guid                       \
                 --do_train 0                            \
                 --do_test 1                             \
                 --n_train_img 5                         \
-                --n_test_img 10                         \
+                --n_test_img 100                         \
                 --bs_train 1                            \
                 --n_inv_step 50                         \
                 --n_train_step 40                       \
@@ -34,7 +34,7 @@ python main.py  --run_test                              \
                 --lpips_edit_th 0.9                     \
                 --save_process_origin                   \
                 --save_x_origin                         \
-                --manual_checkpoint_name "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp5/checkpoint/smiling_LC_CelebA_HQ_t999_ninv50_ngen50_4.pth"
+                --manual_checkpoint_name "/home/ubuntu/controlbfr/RiemannianEdit/src/checkpoint/smiling_LC_CelebA_HQ_t999_ninv50_ngen50_4.pth"
 
                 # --lpips_addnoise_th 1.2
                 # --lpips_edit_th 0.33

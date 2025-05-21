@@ -443,7 +443,8 @@ class DDPM(nn.Module):
         temb = self.temb.dense[1](temb)
         return temb
 
-    def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False):
+    # def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False):
+    def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False, clip_direction=None):
         assert x.shape[2] == x.shape[3] == self.resolution
 
         # timestep embedding
@@ -481,8 +482,11 @@ class DDPM(nn.Module):
                 if delta_h is None:  # Asyrp
                     h2 = h * hs_coeff[0]
                     for i in range(index + 1):
+                        # delta_h = getattr(self, f"layer_{i}")(
+                        #     h, None if ignore_timestep else temb
+                        # )
                         delta_h = getattr(self, f"layer_{i}")(
-                            h, None if ignore_timestep else temb
+                            h, None if ignore_timestep else temb, text_emb=clip_direction
                         )
                         h2 += delta_h * hs_coeff[i + 1]
 
@@ -601,6 +605,9 @@ class DDPM(nn.Module):
                         delta_h = getattr(self, f"layer_{i}")(
                             h, None if ignore_timestep else temb
                         )
+                        # delta_h = getattr(self, f"layer_{i}")(
+                        #     h, None if ignore_timestep else temb, text_emb=clip_direction
+                        # )
                         h2 += delta_h * hs_coeff[i + 1]
                 # use input delta_h  : even tough you does not use DeltaBlock, you need to use index is 0.
                 else:
@@ -954,8 +961,40 @@ class DDPM(nn.Module):
 # ==================================================
 ## Exponential Map code moved to another file
 # ==================================================
+from models.ddpm.expomap import ExponentialMapVanilla, ExponentialMapVanilla2
 # from models.ddpm.expomap import ODEExponentialMap
-from models.ddpm.expomap import ExponentialMap
+# from models.ddpm.expomap import HyperScaleExponentialMap
+
+import clip
+import torchvision.transforms as T
+
+class CLIPWrapper(nn.Module):
+    def __init__(self, model_name="ViT-B/16", device="cuda"):
+        super().__init__()
+        self.model, _ = clip.load(model_name, device=device)
+        self.model.eval()
+        self.device = device
+
+        # Normalize transform for CLIP input
+        self.clip_mean = torch.tensor([0.4815, 0.4578, 0.4082], device=device).view(1, 3, 1, 1)
+        self.clip_std = torch.tensor([0.2686, 0.2613, 0.2758], device=device).view(1, 3, 1, 1)
+
+    def normalize(self, img):
+        return (img - self.clip_mean) / self.clip_std
+
+    def encode_image(self, img_tensor):
+        """
+        img_tensor: [B, 3, H, W] float32 in [0, 1] range
+        Returns: [B, 512] CLIP image embeddings
+        """
+        assert img_tensor.shape[1] == 3, "CLIP expects 3-channel RGB images"
+        img_resized = F.interpolate(img_tensor, size=224, mode='bicubic', align_corners=False)
+        img_norm = self.normalize(img_resized)
+        return self.model.encode_image(img_norm)
+
+# Initialization (once)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+clip_encoder = CLIPWrapper("ViT-B/32", device=device)
 
 class RiemannianBlock(nn.Module):
     def __init__(self, in_channels, out_channels, temb_channels):
@@ -965,14 +1004,23 @@ class RiemannianBlock(nn.Module):
         self.linear = nn.Linear(in_channels, out_channels)
         self.temb_proj = nn.Linear(temb_channels, out_channels)
         self.norm1 = nn.LayerNorm(out_channels)
-        
+
         # # ExponentialMap for accurate geodesic computation
-        self.exp_map = ExponentialMap(out_channels, temb_channels)
+        # self.exp_map = ExponentialMapVanilla(out_channels, temb_channels)
+        # self.exp_map = ExponentialMap(out_channels, temb_channels, text_dim=512)
+        # self.exp_map = ExponentialMap(out_channels, temb_channels, text_dim=512, clip_model=clip_encoder)
+        self.exp_map = ExponentialMapVanilla2(out_channels, temb_channels, text_dim=1024) #, clip_model=clip_encoder)
 
         # # Explicitly use ODEExponentialMap
         # self.exp_map = ODEExponentialMap(out_channels, temb_channels)
+        # self.exp_map = ODEExponentialMap(out_channels, temb_channels, text_dim=512)
+        # self.exp_map = ODEExponentialMap(out_channels, temb_channels, text_dim=512, clip_model=clip_encoder)
 
-    def forward(self, h, temb):
+        # Hyperscale
+        # self.exp_map = HyperScaleExponentialMap(out_channels, temb_channels)
+
+    # def forward(self, h, temb):
+    def forward(self, h, temb, text_emb=None):
         batch_size, channels, height, width = h.shape
         h_flat = h.view(batch_size, channels, -1).permute(0, 2, 1)  # [batch, height*width, channels]
 
@@ -982,12 +1030,14 @@ class RiemannianBlock(nn.Module):
 
         # Apply transformation and normalization
         h_proj = self.norm1(h_proj + temb_proj)
-        
+
         # Reshape back to spatial dimensions
         h_proj = h_proj.permute(0, 2, 1).view(batch_size, -1, height, width)
 
         # Compute explicit geodesic movement via exponential map
-        delta_h = self.exp_map(h_proj, temb)
+        # delta_h = self.exp_map(h_proj, temb)
+        delta_h = self.exp_map(h_proj, temb, text_emb=text_emb)
+        # delta_h = self.exp_map(h_proj, temb, text_emb=text_emb, use_geodesic=(text_emb is not None))
 
         return delta_h
 
@@ -1008,7 +1058,7 @@ class DeltaBlock(nn.Module):
     ):
 
         super().__init__()
-        self.use_midblock = use_midblock
+        # self.use_midblock = use_midblock
         self.emb_type = emb_type
 
         # if use_midblock:
@@ -1031,9 +1081,10 @@ class DeltaBlock(nn.Module):
         # Explicit Riemannian Block at the end
         self.riemannian_block = RiemannianBlock(out_channels, out_channels, temb_channels)
 
-    def forward(self, x, temb=None):
-        if self.use_midblock:
-            return self.model(x, temb)
+    # def forward(self, x, temb=None):
+    def forward(self, x, temb=None, text_emb=None):
+        # if self.use_midblock:
+        #     return self.model(x, temb)
 
         h = self.in_layer(x)
 
@@ -1062,7 +1113,8 @@ class DeltaBlock(nn.Module):
         # h_flat = h.view(batch, channels, height * width).permute(0, 2, 1)
         # h = self.mamba_out(h_flat).permute(0, 2, 1).view(batch, channels, height, width)
 
-        delta_h = self.riemannian_block(h, temb)
+        # delta_h = self.riemannian_block(h, temb)
+        delta_h = self.riemannian_block(h, temb, text_emb=text_emb)
         h = h + delta_h
 
         h = self.final_conv(h)

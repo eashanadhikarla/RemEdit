@@ -1,8 +1,9 @@
 import math
 import torch
 import torch.nn as nn
-from torchdiffeq import odeint
 import torch.nn.functional as F
+# from torchdiffeq import odeint
+from torchdiffeq import odeint_adjoint as odeint  # Use adjoint for stable backprop
 
 def nonlinearity(x):
     # swish
@@ -13,7 +14,10 @@ def Normalize(in_channels):
         num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
     )
 
-class ExponentialMap(nn.Module):
+######
+## W/o text_emb w/o CLIP Loss
+######
+class ExponentialMapVanilla(nn.Module):
     def __init__(self, channels, temb_channels):
         super().__init__()
         self.channels = channels
@@ -30,227 +34,316 @@ class ExponentialMap(nn.Module):
 
         # Project temporal embedding and combine with latent
         temb_proj = self.temb_proj(temb)[:, :, None, None]
-        combined_features = (h + temb_proj).permute(0, 2, 3, 1)  # [batch, height, width, channels]
-
-        tangent_vec = self.linear_tangent(combined_features)  # [batch, height, width, channels]
+        combined_features = (h + temb_proj).permute(0, 2, 3, 1) # [batch, height, width, channels]
+        tangent_vec = self.linear_tangent(combined_features) # [batch, height, width, channels]
 
         # Compute norm (magnitude)
         norm = torch.norm(tangent_vec, dim=-1, keepdim=True)  # [batch, height, width, 1]
-
         # Explicit normalization of tangent directions
         tangent_dir = F.normalize(tangent_vec, p=2, dim=-1)
-
         # Theoretically-driven exponential map approximation (with learned scaling)
         # exp_factor = torch.sin(norm * self.scale) / (norm + 1e-6)
         exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
-
         # Move along tangent direction explicitly (exponential map)
         manifold_point = combined_features + tangent_dir * exp_factor
-
         # Permute back to original shape [batch, channels, height, width]
         manifold_point = manifold_point.permute(0, 3, 1, 2)
-
         # Compute delta_h explicitly
         delta_h = manifold_point - h
-
         return delta_h
 
 
-# class ODEExponentialMap(nn.Module):
-#     def __init__(self, channels, temb_channels):
-#         super().__init__()
-#         self.channels = channels
-
-#         # Linear layers to define tangent vector
-#         self.linear_tangent = nn.Linear(channels, channels)
-#         self.temb_proj = nn.Linear(temb_channels, channels)
-
-#         # Learnable scale for initial velocity
-#         self.scale = nn.Parameter(torch.tensor(0.6))
-
-#     def geodesic_ode(self, t, y):
-#         """
-#         Simple straight-line ODE approximation of geodesic:
-#         dy/dt = v (constant velocity model).
-#         For actual manifolds, this should incorporate Christoffel symbols.
-#         """
-#         v = self.current_tangent_vector
-#         return v
-
-#     def forward(self, h, temb):
-#         batch, channels, height, width = h.shape
+######
+## With text_emb version1
+######
+class ExponentialMapwithPrompt(nn.Module):
+    def __init__(self, channels, temb_channels):
+        super().__init__()
+        self.channels = channels
         
-#         # Project temporal embedding and latent combination
-#         temb_proj = self.temb_proj(temb)[:, :, None, None]
-#         combined_features = (h + temb_proj).permute(0, 2, 3, 1)  # [batch, H, W, C]
+        # Learn local tangent direction using linear layers
+        self.linear_tangent = nn.Linear(channels, channels)
+        self.temb_proj = nn.Linear(temb_channels, channels)
 
-#         tangent_vec = self.linear_tangent(combined_features)  # [batch, H, W, C]
+        # Small trainable scalar for controlling the magnitude of movement along geodesics
+        self.scale = nn.Parameter(torch.tensor(0.6))
 
-#         # Store scaled tangent vector for ODE (initial velocity)
-#         self.current_tangent_vector = tangent_vec * self.scale
+    def forward(self, h, temb, g=None):
+        batch, channels, height, width = h.shape
 
-#         # Flatten to [batch, -1] for ODE solver
-#         y0 = combined_features.view(batch, -1)
+        # Project temporal embedding and combine with latent
+        temb_proj = self.temb_proj(temb)[:, :, None, None]
+        combined_features = (h + temb_proj).permute(0, 2, 3, 1)  # [B, H, W, C]
 
-#         # Solve the ODE explicitly from t=0 to t=1
-#         t = torch.tensor([0.0, 1.0], device=h.device)
-#         solution = odeint(self.geodesic_ode, y0, t, method='rk4')
+        # Learn tangent vector
+        tangent_vec = self.linear_tangent(combined_features)  # [B, H, W, C]
 
-#         # Take the solution at t=1
-#         manifold_point = solution[1].view(batch, height, width, channels)
+        if g is not None:
+            # Flatten spatial dims
+            tangent_vec_flat = tangent_vec.view(batch, -1, channels)  # [B, HW, C]
+            tangent_vec_flat = tangent_vec_flat.transpose(1, 2)        # [B, C, HW]
 
-#         # Permute back to original shape [batch, C, H, W]
-#         manifold_point = manifold_point.permute(0, 3, 1, 2)
+            # Mahalanobis norm: sqrt(v^T g v)
+            gv = torch.bmm(g, tangent_vec_flat)                       # [B, C, HW]
+            dot = (tangent_vec_flat * gv).sum(dim=1, keepdim=True)    # [B, 1, HW]
+            norm = torch.sqrt(dot + 1e-6)                             # [B, 1, HW]
+            norm = norm.view(batch, 1, height, width)                 # [B, 1, H, W]
 
-#         # Compute delta_h explicitly
-#         delta_h = manifold_point - h
+            # Normalize direction and scale
+            tangent_dir = F.normalize(tangent_vec.permute(0, 3, 1, 2), p=2, dim=1)  # [B, C, H, W]
+            exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)             # [B, 1, H, W]
+            delta = exp_factor * tangent_dir
+        else:
+            # Original behavior
+            norm = torch.norm(tangent_vec, dim=-1, keepdim=True)  # [B, H, W, 1]
+            tangent_dir = F.normalize(tangent_vec, p=2, dim=-1)    # [B, H, W, C]
+            exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
+            delta = exp_factor * tangent_dir                      # [B, H, W, C]
+            delta = delta.permute(0, 3, 1, 2)                     # [B, C, H, W]
 
-#         return delta_h
+        return h + delta
 
 
-# ###################
-# ## ODE with Linear
-# ###################
+######
+## With text_emb version 2 w/o CLIP Loss
+######
+class ExponentialMapwithPrompt2(nn.Module):
+    def __init__(self, channels, temb_channels, text_dim=None):
+        super().__init__()
+        self.channels = channels
 
-# class ODEExponentialMap(nn.Module):
-#     def __init__(self, channels, temb_channels):
-#         super().__init__()
-#         self.channels = channels
-#         self.linear_tangent = nn.Linear(channels, channels)
-#         self.temb_proj = nn.Linear(temb_channels, channels)
-#         self.scale = nn.Parameter(torch.tensor(0.6))
+        # Stable, bounded tangent direction
+        self.linear_tangent = nn.Sequential(
+            nn.Linear(channels, channels),
+            nn.Tanh()
+        )
+        self.temb_proj = nn.Linear(temb_channels, channels)
+        self.text_proj = nn.Linear(text_dim, channels) if text_dim is not None else None
 
-#         # Memory-efficient learned Christoffel symbols
-#         self.gamma_net = nn.Sequential(
-#             nn.Linear(self.channels, self.channels * self.channels)
-#         )
+        self.scale = nn.Parameter(torch.tensor(0.6))
 
-#     def compute_christoffel_symbols(self, y):
-#         batch_size, num_points, channels = y.shape
-#         gamma = self.gamma_net(y)  # [B, N, C²]
-#         gamma = gamma.view(batch_size, num_points, self.channels, self.channels)  # [B, N, C, C]
-#         gamma = torch.clamp(gamma, min=-3.0, max=3.0)  # prevent extreme curvature
-#         return gamma
+    def forward(self, h, temb, g=None, text_emb=None, use_geodesic=False):
+        B, C, H, W = h.shape
 
-#     def geodesic_ode(self, t, state):
-#         batch_size = state.shape[0]
-#         y, v = torch.chunk(state, 2, dim=-1)
+        # Temporal embedding projection
+        temb_proj = self.temb_proj(temb)[:, :, None, None]  # [B, C, 1, 1]
+        combined = h + temb_proj
 
-#         y = y.view(batch_size, -1, self.channels)  # [B, N, C]
-#         v = v.view(batch_size, -1, self.channels)  # [B, N, C]
+        # Optional text embedding projection
+        if text_emb is not None and self.text_proj is not None:
+            text_proj = self.text_proj(text_emb)[:, :, None, None]  # [B, C, 1, 1]
+            text_proj = F.normalize(text_proj, p=2, dim=1)  # Normalize across channel
+            combined = combined + 0.1 * text_proj  # Modest residual injection
 
-#         gamma = self.compute_christoffel_symbols(y)  # [B, N, C, C]
+        # Project to tangent space
+        combined_features = combined.permute(0, 2, 3, 1)  # [B, H, W, C]
+        tangent_vec = self.linear_tangent(combined_features)  # [B, H, W, C]
 
-#         # Approximated second-order term: -sum_j gamma_ij * v_j^2
-#         dv_dt = -torch.einsum('bnij,bnj,bnj->bni', gamma, v, v)
-#         dy_dt = v
+        if g is not None:
+            # Mahalanobis-aware metric norm (optional branch)
+            tangent_vec_flat = tangent_vec.view(B, -1, C).transpose(1, 2)  # [B, C, HW]
+            gv = torch.bmm(g, tangent_vec_flat)  # [B, C, HW]
+            dot = (tangent_vec_flat * gv).sum(dim=1, keepdim=True)  # [B, 1, HW]
+            norm = torch.sqrt(dot + 1e-6).view(B, 1, H, W)  # [B, 1, H, W]
 
-#         dy_dt = dy_dt.reshape(batch_size, -1)
-#         dv_dt = dv_dt.reshape(batch_size, -1)
+            tangent_dir = F.normalize(tangent_vec.permute(0, 3, 1, 2), p=2, dim=1)  # [B, C, H, W]
+            exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
+            delta = exp_factor * tangent_dir
+        else:
+            # Standard direction
+            norm = torch.norm(tangent_vec, dim=-1, keepdim=True)  # [B, H, W, 1]
+            tangent_dir = F.normalize(tangent_vec, p=2, dim=-1)  # [B, H, W, C]
+            exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
+            delta = exp_factor * tangent_dir  # [B, H, W, C]
+            delta = delta.permute(0, 3, 1, 2)  # [B, C, H, W]
 
-#         return torch.cat([dy_dt, dv_dt], dim=-1)
+        # Final stability clamp
+        delta_norm = torch.norm(delta.reshape(B, -1), dim=1, keepdim=True) + 1e-6
+        scaling = torch.clamp(0.1 / delta_norm, max=1.0).view(B, 1, 1, 1)
+        delta = delta * scaling
 
-#     def forward(self, h, temb):
-#         batch, channels, height, width = h.shape
+        return h + delta
 
-#         temb_proj = self.temb_proj(temb)[:, :, None, None]
-#         combined_features = (h + temb_proj).permute(0, 2, 3, 1)  # [B, H, W, C]
 
-#         tangent_vec = self.linear_tangent(combined_features)  # [B, H, W, C]
-#         tangent_vec = F.normalize(tangent_vec, p=2, dim=-1)    # unit direction
-#         tangent_vec_scaled = tangent_vec * self.scale          # scaled step
+######
+## With text_emb with CLIP Loss
+######
+class ExponentialMapwithPromptandCLIP(nn.Module):
+    def __init__(self, channels, temb_channels, text_dim=None, clip_model=None):
+        super().__init__()
+        self.channels = channels
 
-#         y0 = combined_features.reshape(batch, -1)
-#         v0 = tangent_vec_scaled.reshape(batch, -1)
-#         state0 = torch.cat([y0, v0], dim=-1)  # [B, 2 * HWC]
+        self.linear_tangent = nn.Sequential(
+            nn.Linear(channels, channels),
+            nn.Tanh()
+        )
+        self.temb_proj = nn.Linear(temb_channels, channels)
+        self.text_proj = nn.Linear(text_dim, channels) if text_dim is not None else None
 
-#         t_span = torch.tensor([0.0, 1.0], device=h.device)
+        self.scale = nn.Parameter(torch.tensor(0.6))
+        self.clip_model = clip_model  # CLIPWrapper instance
 
-#         # Adaptive ODE solver (more stable for stiff problems)
-#         solution = odeint(self.geodesic_ode, state0, t_span, method='dopri5', rtol=1e-4, atol=1e-6)
+    def forward(self, h, temb, g=None, text_emb=None, use_geodesic=False):
+        B, C, H, W = h.shape
 
-#         y1 = solution[1][:, :y0.shape[1]].view(batch, height, width, channels)
-#         manifold_point = y1.permute(0, 3, 1, 2)  # [B, C, H, W]
+        temb_proj = self.temb_proj(temb)[:, :, None, None]
+        combined = h + temb_proj
 
-#         delta_h = torch.clamp(manifold_point - h, min=-1.0, max=1.0)  # safe range
-#         return delta_h
+        if text_emb is not None and self.text_proj is not None:
+            text_proj = self.text_proj(text_emb)[:, :, None, None]
+            text_proj = F.normalize(text_proj, p=2, dim=1)
+            combined = combined + 0.1 * text_proj
 
-# #################
-# ## ODE with Mamba
-# #################
-# from torchdiffeq import odeint
+        combined_features = combined.permute(0, 2, 3, 1)
+        tangent_vec = self.linear_tangent(combined_features)
 
-# class ODEExponentialMap(nn.Module):
-#     def __init__(self, channels, temb_channels):
-#         super().__init__()
-#         self.channels = channels
-#         # self.temb_proj = nn.Linear(temb_channels, channels)
-#         # Use Mamba for temporal embedding projection
-#         self.temb_mamba = Mamba(d_model=temb_channels, d_state=16, d_conv=3, expand=2)
-#         self.linear_tangent = Mamba(d_model=channels, d_state=16, d_conv=3, expand=2)
+        # if g is not None:
+        #     tangent_vec_flat = tangent_vec.view(B, -1, C).transpose(1, 2)
+        #     gv = torch.bmm(g, tangent_vec_flat)
+        #     dot = (tangent_vec_flat * gv).sum(dim=1, keepdim=True)
+        #     norm = torch.sqrt(dot + 1e-6).view(B, 1, H, W)
 
-#         self.scale = nn.Parameter(torch.tensor(0.6))
+        #     tangent_dir = F.normalize(tangent_vec.permute(0, 3, 1, 2), p=2, dim=1)
+        #     exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
+        #     delta = exp_factor * tangent_dir
+        # else:
+        norm = torch.norm(tangent_vec, dim=-1, keepdim=True)
+        tangent_dir = F.normalize(tangent_vec, p=2, dim=-1)
+        exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
+        delta = exp_factor * tangent_dir
+        delta = delta.permute(0, 3, 1, 2)
 
-#         # Memory-efficient learned Christoffel symbols
-#         self.gamma_net = nn.Sequential(
-#             nn.Linear(self.channels, self.channels * self.channels)
-#         )
+        # Identity-preserving delta adjustment using CLIP
+        delta_norm = torch.norm(delta.reshape(B, -1), dim=1, keepdim=True) + 1e-6
+        scaling = torch.clamp(0.1 / delta_norm, max=1.0).view(B, 1, 1, 1)
+        delta_h = delta * scaling
 
-#     def compute_christoffel_symbols(self, y):
-#         batch_size, num_points, channels = y.shape
-#         gamma = self.gamma_net(y)  # [B, N, C²]
-#         gamma = gamma.view(batch_size, num_points, self.channels, self.channels)  # [B, N, C, C]
-#         gamma = torch.clamp(gamma, min=-3.0, max=3.0)  # prevent extreme curvature
-#         return gamma
+        # if self.clip_model is not None:
+        #     with torch.no_grad():
+        #         x0_clip = self.clip_model.encode_image(h)          # [B, D]
+        #         x1_clip = self.clip_model.encode_image(h + delta_h)
+        #         cosine_sim = F.cosine_similarity(x0_clip, x1_clip, dim=-1)  # [B]
+        #         loss_id = 1 - cosine_sim.mean()
+        #         delta_h = delta_h - 0.05 * loss_id  # identity-preserving penalty
 
-#     def geodesic_ode(self, t, state):
-#         batch_size = state.shape[0]
-#         y, v = torch.chunk(state, 2, dim=-1)
+        if self.clip_model is not None and h.shape[1] == 3:
+            with torch.no_grad():
+                x0_clip = self.clip_model.encode_image(h)
+                x1_clip = self.clip_model.encode_image(h + delta_h)
+                cosine_sim = F.cosine_similarity(x0_clip, x1_clip, dim=-1)
+                loss_id = 1 - cosine_sim.mean()
+                delta_h = delta_h - 0.05 * loss_id
 
-#         y = y.view(batch_size, -1, self.channels)  # [B, N, C]
-#         v = v.view(batch_size, -1, self.channels)  # [B, N, C]
+        return h + delta_h
 
-#         gamma = self.compute_christoffel_symbols(y)  # [B, N, C, C]
+######
+## With text_emb (modulated + gated) with CLIP Loss
+######
+# class ExponentialMapwithPromptandCLIP(nn.Module):
+class ExponentialMap(nn.Module):
+    def __init__(self, channels, temb_channels, text_dim=None, clip_model=None):
+        super().__init__()
+        self.channels = channels
 
-#         # Approximated second-order term: -sum_j gamma_ij * v_j^2
-#         dv_dt = -torch.einsum('bnij,bnj,bnj->bni', gamma, v, v)
-#         dy_dt = v
+        self.linear_tangent = nn.Sequential(
+            nn.Linear(channels, channels),
+            nn.Tanh()
+        )
+        self.temb_proj = nn.Linear(temb_channels, channels)
+        self.text_proj = nn.Linear(text_dim, channels * 2) if text_dim is not None else None  # FiLM = scale + shift
 
-#         dy_dt = dy_dt.reshape(batch_size, -1)
-#         dv_dt = dv_dt.reshape(batch_size, -1)
+        self.scale = nn.Parameter(torch.tensor(0.6))
+        self.clip_model = clip_model  # CLIPWrapper instance
 
-#         return torch.cat([dy_dt, dv_dt], dim=-1)
+    def forward(self, h, temb, g=None, text_emb=None, use_geodesic=False):
+        B, C, H, W = h.shape
 
-#     def forward(self, h, temb):
-#         batch, channels, height, width = h.shape
+        temb_proj = self.temb_proj(temb)[:, :, None, None]
+        combined = h + temb_proj
 
-#         # Project temporal embedding via Mamba over a singleton time dimension
-#         temb_seq = temb.unsqueeze(1)                              # [B, 1, temb_channels]
-#         temb_out = self.temb_mamba(temb_seq)                      # [B, 1, channels]
-#         temb_proj = temb_out.squeeze(1)[:, :, None, None]         # [B, channels, 1, 1]
+        # FiLM-style modulation with gate
+        if text_emb is not None and self.text_proj is not None:
+            film_params = self.text_proj(text_emb)  # [B, 2C]
+            scale, shift = film_params.chunk(2, dim=1)
+            scale = torch.tanh(scale) * 0.05  # smooth small modulation
+            shift = torch.tanh(shift) * 0.05
+            scale = scale[:, :, None, None]
+            shift = shift[:, :, None, None]
 
-#         combined_features = (h + temb_proj).permute(0, 2, 3, 1)  # [B, H, W, C]
+            gate = torch.sigmoid(scale.mean(dim=1, keepdim=True))  # [B, 1, 1, 1]
+            combined = combined * (1 + gate * scale) + gate * shift
 
-#         batch_, height_, width_, channels_ = combined_features.shape
-#         # Prepare sequence for Mamba: [batch, sequence, channels]
-#         combined_features_flat = combined_features.view(batch_, height_ * width_, channels_)
-#         tangent_vec = self.linear_tangent(combined_features_flat)  # [batch, sequence, channels]
-#         tangent_vec = tangent_vec.view(batch_, height_, width_, channels_)
+        combined_features = combined.permute(0, 2, 3, 1)
+        tangent_vec = self.linear_tangent(combined_features)
 
-#         tangent_vec = F.normalize(tangent_vec, p=2, dim=-1)    # unit direction
-#         tangent_vec_scaled = tangent_vec * self.scale          # scaled step
+        norm = torch.norm(tangent_vec, dim=-1, keepdim=True)
+        tangent_dir = F.normalize(tangent_vec, p=2, dim=-1)
+        exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
+        delta = exp_factor * tangent_dir
+        delta = delta.permute(0, 3, 1, 2)
 
-#         y0 = combined_features.reshape(batch_, -1)
-#         v0 = tangent_vec_scaled.reshape(batch_, -1)
-#         state0 = torch.cat([y0, v0], dim=-1)  # [B, 2 * HWC]
+        # Normalize final update
+        delta_norm = torch.norm(delta.reshape(B, -1), dim=1, keepdim=True) + 1e-6
+        scaling = torch.clamp(0.1 / delta_norm, max=1.0).view(B, 1, 1, 1)
+        delta_h = delta * scaling
 
-#         t_span = torch.tensor([0.0, 1.0], device=h.device)
+        # Optional: CLIP-based identity regularization (image input only)
+        if self.clip_model is not None and h.shape[1] == 3:
+            with torch.no_grad():
+                x0_clip = self.clip_model.encode_image(h)
+                x1_clip = self.clip_model.encode_image(h + delta_h)
+                cosine_sim = F.cosine_similarity(x0_clip, x1_clip, dim=-1)
+                loss_id = 1 - cosine_sim.mean()
+                delta_h = delta_h - 0.05 * loss_id
 
-#         # Adaptive ODE solver (more stable for stiff problems)
-#         solution = odeint(self.geodesic_ode, state0, t_span, method='dopri5', rtol=1e-4, atol=1e-6)
+        return h + delta_h
 
-#         y1 = solution[1][:, :y0.shape[1]].view(batch_, height_, width_, channels_)
-#         manifold_point = y1.permute(0, 3, 1, 2)  # [B, C, H, W]
+######
+## With text_emb (modulated + gated) with CLIP Loss on vanilla simplest network
+######
+class ExponentialMapVanilla2(nn.Module):
+    def __init__(self, channels, temb_channels, text_dim=None):
+        super().__init__()
+        self.channels = channels
+        
+        self.linear_tangent = nn.Linear(channels, channels)
+        self.temb_proj = nn.Linear(temb_channels, channels)
+        self.text_proj = nn.Linear(text_dim, channels * 2) if text_dim is not None else None
 
-#         delta_h = torch.clamp(manifold_point - h, min=-1.0, max=1.0)  # safe range
-#         return delta_h
+        self.scale = nn.Parameter(torch.tensor(0.6))
+        self.global_step = 0  # Optional external hook for time gating
+
+    def forward(self, h, temb, text_emb=None):
+        B, C, H, W = h.shape
+
+        temb_proj = self.temb_proj(temb)[:, :, None, None]
+        combined = h + temb_proj
+
+        if (
+            self.training and 
+            self.global_step > 1000 and 
+            text_emb is not None and 
+            self.text_proj is not None
+        ):
+            film_params = self.text_proj(text_emb)  # [B, 2C]
+            scale, shift = film_params.chunk(2, dim=1)  # [B, C] each
+            scale = torch.tanh(scale) * 0.05
+            shift = torch.tanh(shift) * 0.05
+            scale = scale[:, :, None, None]
+            shift = shift[:, :, None, None]
+
+            gate = torch.sigmoid(scale.mean(dim=1, keepdim=True))  # [B, 1, 1, 1]
+            combined = combined * (1 + gate * scale) + gate * shift
+
+        combined_features = combined.permute(0, 2, 3, 1)  # [B, H, W, C]
+        tangent_vec = self.linear_tangent(combined_features)  # [B, H, W, C]
+
+        norm = torch.norm(tangent_vec, dim=-1, keepdim=True)
+        tangent_dir = F.normalize(tangent_vec, p=2, dim=-1)
+        exp_factor = torch.tanh(norm * self.scale) / (norm + 1e-6)
+        manifold_point = combined_features + tangent_dir * exp_factor
+
+        manifold_point = manifold_point.permute(0, 3, 1, 2)
+        delta_h = manifold_point - h
+
+        return delta_h

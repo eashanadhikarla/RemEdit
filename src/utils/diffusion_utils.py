@@ -260,7 +260,7 @@ def denoising_step_edit(xt, t, t_next, *,
             x0_semantic = (xt - et_modified * (1 - at).sqrt()) / at.sqrt()
 
             # Geodesic interpolation (SLERP) for manifold-aware blending
-            alpha = 0.1 # 0.3  # More stable, tune carefully
+            alpha = 0.1
 
             def slerp(a, b, alpha):
                 shape = a.shape

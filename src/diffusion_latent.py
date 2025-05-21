@@ -248,7 +248,7 @@ class Asyrp(object):
             self.args.target_image_id = [int(i) for i in self.args.target_image_id]
 
         # ----------- Training -----------#
-        for it_out in range(self.args.start_iter_when_you_use_pretrained ,self.args.n_iter):
+        for it_out in range(self.args.start_iter_when_you_use_pretrained, self.args.n_iter):
             exp_id = os.path.split(self.args.exp)[-1]
             if self.args.load_from_checkpoint:
                 save_name = f'checkpoint/{self.args.load_from_checkpoint}_LC_{self.config.data.category}_t{self.args.t_0}_ninv{self.args.n_inv_step}_ngen{self.args.n_train_step}_{it_out}.pth'

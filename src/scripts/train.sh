@@ -9,14 +9,14 @@ CUDA_VISIBLE_DEVICES=$gpu
 
 python main.py  --run_train                         \
                 --config $config                    \
-                --exp ./runs/exp9/$guid             \
+                --exp ./runs/exp14/$guid       \
                 --edit_attr $guid                   \
                 --do_train 1                        \
                 --do_test 1                         \
-                --bs_train 1                        \
+                --bs_train 2                        \
                 --bs_test 1                         \
-                --lr_training 1e-3                  \
-                --n_train_img 50                    \
+                --lr_training 0.1                  \
+                --n_train_img 101                  \
                 --accumulation_steps 1              \
                 --n_test_img 32                     \
                 --n_inv_step 50                     \
@@ -25,16 +25,18 @@ python main.py  --run_train                         \
                 --get_h_num 1                       \
                 --train_delta_block                 \
                 --sh_file_name $sh_file_name        \
-                --n_iter 5                          \
+                --n_iter 2                          \
                 --save_x0                           \
                 --use_x0_tensor                     \
                 --save_x_origin                     \
                 --clip_loss_w 1.0                   \
                 --l1_loss_w 3.0                     \
-                --user_defined_t_edit 500           \
-                --user_defined_t_addnoise 200       \
+                --user_defined_t_edit 513           \
+                --user_defined_t_addnoise 167       \
                 --retrain 1                         \
                 --t_0 999                           \
+                --use_id_loss                       \
+                # --load_random_noise                 \
 
                 # --clip_loss_w 0.8                 \
                 # --l1_loss_w 3.0                   \
