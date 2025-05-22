@@ -35,6 +35,10 @@ from datasets.imagenet_dic import IMAGENET_DIC
 from configs.paths_config import DATASET_PATHS, MODEL_PATHS
 from transformers.optimization import Adafactor, AdafactorSchedule
 
+# CSSA and Semantic Memory
+from models.ddpm.cssa_module import CrossStepSemanticAttention
+from models.ddpm.cssa_clip_manager import SemanticMemoryManager
+
 
 class Asyrp(object):
     def __init__(self, args, config, device=None):
@@ -49,6 +53,10 @@ class Asyrp(object):
             device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self.device = device
         self.accumulation_steps = args.accumulation_steps
+
+        self.semantic_manager = SemanticMemoryManager(device=self.device)
+        # self.semantic_attention = CrossStepSemanticAttention(z_dim=512)
+        self.semantic_attention = CrossStepSemanticAttention(z_dim=512).to(self.device)
 
         self.model_var_type = config.model.var_type
         betas = get_beta_schedule(
@@ -328,8 +336,15 @@ class Asyrp(object):
                         total_clip_loss = 0
                         total_l1_loss = 0
                         with tqdm(total=len(seq_train), desc=f"training iteration") as progress_bar:
+                            drift_tracker = []
+                            early_exit = False
+                            epsilon = 0.05
+                            patience = 3
                             for t_it, (i, j) in enumerate(zip(reversed(seq_train), reversed(seq_train_next))):
-    
+
+                                if early_exit:
+                                    break
+
                                 t = (torch.ones(self.args.bs_train) * i).to(self.device)
                                 t_next = (torch.ones(self.args.bs_train) * j).to(self.device)
 
@@ -348,7 +363,7 @@ class Asyrp(object):
                                 #                         )
                                                             # when train delta_block, delta_h is None (ignored)
 
-                                xt_next, x0_t, _, _ = denoising_step_edit(xt_next.detach(), t=t, t_next=t_next, models=model,
+                                xt_next, x0_t, _, middle_h = denoising_step_edit(xt_next.detach(), t=t, t_next=t_next, models=model,
                                                             logvars = self.logvar,                                        
                                                             b = self.betas,
                                                             sampling_type = self.args.sample_type,
@@ -360,7 +375,33 @@ class Asyrp(object):
                                                             delta_h = delta_h_dict[0] if (self.args.ignore_timesteps and self.args.train_delta_h) else delta_h_dict[t[0].item()],
                                                             ignore_timestep = self.args.ignore_timesteps,
                                                         )
-                                
+
+                                # ----------- CSSA/CSSA Early Exit ----------- #
+                                if self.args.use_cssa or self.args.use_cssa_early_exit:
+                                    recon_image = (x0_t + 1) * 0.5  # [-1, 1] to [0, 1]
+                                    semantic_emb = self.semantic_manager.encode(recon_image)
+                                    self.semantic_manager.update_memory(semantic_emb)
+
+                                if self.args.use_cssa:
+                                    memory_bank = [m.to(middle_h.device) for m in self.semantic_manager.get_memory()]
+                                    if len(memory_bank) > 0:
+                                        # xt_next = self.semantic_attention(middle_h, memory_bank)
+                                        middle_h = self.semantic_attention(middle_h, memory_bank)
+
+                                    if self.args.use_cssa_early_exit:
+                                        if len(self.semantic_manager.memory_bank) >= 2:
+                                            curr = semantic_emb
+                                            prev = self.semantic_manager.memory_bank[-2]
+                                            semantic_distance = torch.norm(curr - prev, dim=-1).mean().item()
+                                            drift_tracker.append(semantic_distance)
+
+                                            if len(drift_tracker) > patience:
+                                                drift_tracker.pop(0)
+
+                                            if len(drift_tracker) == patience and max(drift_tracker) < epsilon:
+                                                print(f"[Early Exit] Semantic drift below {epsilon} for {patience} steps.")
+                                                early_exit = True
+
                                 # xt_next, x0_t, _, _ = CLO_denoising_step(
                                 #                             xt_next.detach(), t=t, t_next=t_next, models=model,
                                 #                             b=self.betas, eta=0.0,
@@ -371,7 +412,7 @@ class Asyrp(object):
                                 #                             ignore_timestep=self.args.ignore_timesteps,
                                 #                             alpha=0.3  # explicit tunable parameter clearly
                                 #                         )
-                                
+
                                 # step 2: DDIM
                                 with torch.no_grad():    
                                     x_origin, x0_t_origin, _, _ = denoising_step(x_origin.detach(), t=t, t_next=t_next, models=model,
@@ -554,16 +595,21 @@ class Asyrp(object):
             else:
                 if not isinstance(hs_coeff, list):
                     hs_coeff = [hs_coeff]
-                
+
+                drift_log = []  # <-- Inserted before the hs_coeff_tuple loop
                 for hs_coeff_tuple in hs_coeff:
                     x = x_lat_tensor.clone().to(self.device)
+                    drift_tracker = []
+                    early_exit = False
+                    epsilon = 0.05
+                    patience = 3
 
                     for it, (i, j) in enumerate(zip(reversed((seq_inv)), reversed((seq_inv_next)))):
                         t = (torch.ones(self.args.bs_train) * i).to(self.device)
                         t_next = (torch.ones(self.args.bs_train) * j).to(self.device)
 
                         x, x0_t, delta_h, _ = denoising_step(x, t = t, t_next = t_next, models = model,
-                                        logvars = self.logvar,                                
+                                        logvars = self.logvar,
                                         sampling_type = self.args.sample_type,
                                         b = self.betas,
                                         learn_sigma = self.learn_sigma,
@@ -576,6 +622,39 @@ class Asyrp(object):
                                         dt_lambda = self.args.dt_lambda,
                                         warigari = self.args.warigari,
                                         )
+                        # --- CSSA/CSSA Early Exit block ---
+                        if self.args.use_cssa or self.args.use_cssa_early_exit:
+                            recon_image = (x0_t + 1) * 0.5
+                            semantic_emb = self.semantic_manager.encode(recon_image)
+                            self.semantic_manager.update_memory(semantic_emb)
+
+                        if self.args.use_cssa:
+                            memory_bank = self.semantic_manager.get_memory()
+                            # Insert check before using middle_h
+                            if 'middle_h' not in locals():
+                                print("[Warning] middle_h not set; skipping CSSA for this step.")
+                                break
+                            if len(memory_bank) > 0:
+                                middle_h = self.semantic_attention(middle_h, memory_bank)
+
+                            if self.args.use_cssa_early_exit:
+                                if len(self.semantic_manager.memory_bank) >= 2:
+                                    curr = semantic_emb
+                                    prev = self.semantic_manager.memory_bank[-2]
+                                    semantic_distance = torch.norm(curr - prev, dim=-1).mean().item()
+                                    drift_tracker.append(semantic_distance)
+                                    drift_log.append((int(t[0].item()), semantic_distance))
+
+                                    if len(drift_tracker) > patience:
+                                        drift_tracker.pop(0)
+
+                                    if len(drift_tracker) == patience and max(drift_tracker) < epsilon:
+                                        print(f"[Early Exit - Test] Semantic drift below {epsilon} for {patience} steps.")
+                                        early_exit = True
+
+                        if early_exit:
+                            break
+
                         progress_bar.update(1)
 
                         if save_process_delta_h:
@@ -601,7 +680,7 @@ class Asyrp(object):
             else:
                 clip_loss = -1
             clip_loss = clip_loss.mean().cpu().detach().numpy()
-            
+
             self.eval_clip_losses.append(clip_loss)
             self.eval_clip_similarities.append(1 - clip_loss)
 
@@ -622,7 +701,7 @@ class Asyrp(object):
             # original
             tvu.save_image(x[0], os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png'), normalization=True)
             image_save_path = os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png')
-            
+
             # edited
             idx_edited_0 = 0 + self.args.bs_train
             tvu.save_image(x[idx_edited_0], os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png'), normalization=True)
@@ -636,15 +715,24 @@ class Asyrp(object):
             tvu.save_image(x[0], os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png'), normalization=True)
             image_save_path = os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png')
 
-            # reconstructed 
+            # reconstructed
             idx_recon_0 = 0 + self.args.bs_train
             tvu.save_image(x[idx_recon_0], os.path.join(folder_dir, 'reconstructed', f'{file_name}_ngen{self.args.n_train_step}_reconstructed.png'), normalization=True)
             image_save_path = os.path.join(folder_dir, 'reconstructed', f'{file_name}_ngen{self.args.n_train_step}_reconstructed.png')
-            
+
             # edited
             idx_edited_0 = 0 + (self.args.bs_train * 2)
             tvu.save_image(x[idx_edited_0], os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png'), normalization=True)
             image_save_path = os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png')
+
+        # --- Save semantic drift log if enabled ---
+        if self.args.use_cssa_early_exit and 'drift_log' in locals() and drift_log:
+            log_path = os.path.join(folder_dir, f"{file_name}_semantic_drift.tsv")
+            with open(log_path, "w") as f:
+                f.write("Timestep\tSemanticDrift\n")
+                for step, val in drift_log:
+                    f.write(f"{step}\t{val:.6f}\n")
+            print(f"Semantic drift log saved to {log_path}")
 
         time_e = time.time()
         print(f'{time_e - time_s} seconds, {file_name}_ngen{self.args.n_train_step}.png is saved')
@@ -700,6 +788,8 @@ class Asyrp(object):
 
         model = model.to(self.device)
         model = torch.nn.DataParallel(model)
+
+        self.semantic_manager.memory_bank = []
 
         exp_id = os.path.split(self.args.exp)[-1]
         if self.args.load_from_checkpoint:
@@ -1138,7 +1228,7 @@ class Asyrp(object):
                                                learn_sigma=self.learn_sigma,
                                                )
                             progress_bar.update(1)
-                    
+    
                     time_e = time.time()
                     print(f'{time_e - time_s} seconds')
                     x_lat = x.clone()

@@ -22,10 +22,17 @@ class CrossStepSemanticAttention(nn.Module):
             Tensor of shape [B, C, H, W] after semantic attention fusion.
         """
         B, C, H, W = z_t.shape
-        z_flat = z_t.view(B, C, -1).permute(0, 2, 1)  # [B, HW, C]
+        # z_flat = z_t.view(B, C, -1).permute(0, 2, 1)  # [B, HW, C]
+        z_flat = z_t.flatten(2).permute(0, 2, 1)  # [B, HW, C]
+
+        if z_flat.shape[-1] != self.query_proj.in_features:
+            z_flat = z_flat.permute(0, 2, 1)  # fallback if input is accidentally [B, C, HW]
 
         query = self.query_proj(z_flat)  # [B, HW, s_dim]
+        query = query.to(memory_bank[0].device)
+
         keys = torch.stack(memory_bank, dim=1)  # [B, T, s_dim]
+        keys = keys.to(query.device)
         keys_proj = self.key_proj(keys)
         values = self.value_proj(keys)
 

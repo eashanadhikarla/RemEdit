@@ -445,6 +445,7 @@ class DDPM(nn.Module):
 
     # def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False):
     def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False, clip_direction=None):
+        # print(f"[DEBUG] Input shape to model: {x.shape}, expected resolution: {self.resolution}")
         assert x.shape[2] == x.shape[3] == self.resolution
 
         # timestep embedding
