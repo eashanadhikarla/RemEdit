@@ -35,9 +35,6 @@ from datasets.imagenet_dic import IMAGENET_DIC
 from configs.paths_config import DATASET_PATHS, MODEL_PATHS
 from transformers.optimization import Adafactor, AdafactorSchedule
 
-# CSSA and Semantic Memory
-from models.ddpm.cssa_module import CrossStepSemanticAttention
-from models.ddpm.cssa_clip_manager import SemanticMemoryManager
 
 
 class Asyrp(object):
@@ -54,9 +51,7 @@ class Asyrp(object):
         self.device = device
         self.accumulation_steps = args.accumulation_steps
 
-        self.semantic_manager = SemanticMemoryManager(device=self.device)
-        # self.semantic_attention = CrossStepSemanticAttention(z_dim=512)
-        self.semantic_attention = CrossStepSemanticAttention(z_dim=512).to(self.device)
+
 
         self.model_var_type = config.model.var_type
         betas = get_beta_schedule(
@@ -348,21 +343,6 @@ class Asyrp(object):
                                 t = (torch.ones(self.args.bs_train) * i).to(self.device)
                                 t_next = (torch.ones(self.args.bs_train) * j).to(self.device)
 
-                                # # step 1: Asyrp
-                                # xt_next, x0_t, _, _ = denoising_step(xt_next.detach(), t=t, t_next=t_next, models=model,
-                                #                             logvars = self.logvar,                                        
-                                #                             b = self.betas,
-                                #                             sampling_type = self.args.sample_type,
-                                #                             eta = 0.0,
-                                #                             learn_sigma = self.learn_sigma,
-                                #                             index = 0 if not (self.args.image_space_noise_optim or self.args.image_space_noise_optim_delta_block) else None,
-                                #                             t_edit = self.t_edit,
-                                #                             hs_coeff = hs_coeff,
-                                #                             delta_h = delta_h_dict[0] if (self.args.ignore_timesteps and self.args.train_delta_h) else delta_h_dict[t[0].item()],
-                                #                             ignore_timestep = self.args.ignore_timesteps,
-                                #                         )
-                                                            # when train delta_block, delta_h is None (ignored)
-
                                 xt_next, x0_t, _, middle_h = denoising_step_edit(xt_next.detach(), t=t, t_next=t_next, models=model,
                                                             logvars = self.logvar,                                        
                                                             b = self.betas,
@@ -376,31 +356,21 @@ class Asyrp(object):
                                                             ignore_timestep = self.args.ignore_timesteps,
                                                         )
 
-                                # ----------- CSSA/CSSA Early Exit ----------- #
-                                if self.args.use_cssa or self.args.use_cssa_early_exit:
-                                    recon_image = (x0_t + 1) * 0.5  # [-1, 1] to [0, 1]
-                                    semantic_emb = self.semantic_manager.encode(recon_image)
-                                    self.semantic_manager.update_memory(semantic_emb)
-
-                                if self.args.use_cssa:
-                                    memory_bank = [m.to(middle_h.device) for m in self.semantic_manager.get_memory()]
-                                    if len(memory_bank) > 0:
-                                        # xt_next = self.semantic_attention(middle_h, memory_bank)
-                                        middle_h = self.semantic_attention(middle_h, memory_bank)
-
-                                    if self.args.use_cssa_early_exit:
-                                        if len(self.semantic_manager.memory_bank) >= 2:
-                                            curr = semantic_emb
-                                            prev = self.semantic_manager.memory_bank[-2]
-                                            semantic_distance = torch.norm(curr - prev, dim=-1).mean().item()
-                                            drift_tracker.append(semantic_distance)
-
-                                            if len(drift_tracker) > patience:
-                                                drift_tracker.pop(0)
-
-                                            if len(drift_tracker) == patience and max(drift_tracker) < epsilon:
-                                                print(f"[Early Exit] Semantic drift below {epsilon} for {patience} steps.")
-                                                early_exit = True
+                                # ----------- Early Exit (CSSA logic removed) ----------- #
+                                if self.args.use_cssa_early_exit:
+                                    # Simulate semantic drift using a placeholder heuristic (e.g., L1 diff)
+                                    # In practice, replace this with a proper semantic drift metric
+                                    if t_it > 0:
+                                        semantic_distance = torch.abs(x0_t - x0_t_origin).mean().item()
+                                    else:
+                                        semantic_distance = 1.0  # Large initial drift
+                                    drift_tracker.append(semantic_distance)
+                                    if len(drift_tracker) > patience:
+                                        drift_tracker.pop(0)
+                                    if len(drift_tracker) == patience and max(drift_tracker) < epsilon:
+                                        print(f"[Early Exit] Semantic drift below {epsilon} for {patience} steps.")
+                                        early_exit = True
+                                        break
 
                                 # xt_next, x0_t, _, _ = CLO_denoising_step(
                                 #                             xt_next.detach(), t=t, t_next=t_next, models=model,
@@ -542,7 +512,6 @@ class Asyrp(object):
                 x_lat_tensor = None
                 x0_tensor = None
 
-
     @torch.no_grad()
     def save_image(self, model, x_lat_tensor, seq_inv, seq_inv_next,
                     save_x0 = False, save_x_origin = False,
@@ -622,36 +591,21 @@ class Asyrp(object):
                                         dt_lambda = self.args.dt_lambda,
                                         warigari = self.args.warigari,
                                         )
-                        # --- CSSA/CSSA Early Exit block ---
-                        if self.args.use_cssa or self.args.use_cssa_early_exit:
-                            recon_image = (x0_t + 1) * 0.5
-                            semantic_emb = self.semantic_manager.encode(recon_image)
-                            self.semantic_manager.update_memory(semantic_emb)
-
-                        if self.args.use_cssa:
-                            memory_bank = self.semantic_manager.get_memory()
-                            # Insert check before using middle_h
-                            if 'middle_h' not in locals():
-                                print("[Warning] middle_h not set; skipping CSSA for this step.")
-                                break
-                            if len(memory_bank) > 0:
-                                middle_h = self.semantic_attention(middle_h, memory_bank)
-
-                            if self.args.use_cssa_early_exit:
-                                if len(self.semantic_manager.memory_bank) >= 2:
-                                    curr = semantic_emb
-                                    prev = self.semantic_manager.memory_bank[-2]
-                                    semantic_distance = torch.norm(curr - prev, dim=-1).mean().item()
-                                    drift_tracker.append(semantic_distance)
-                                    drift_log.append((int(t[0].item()), semantic_distance))
-
-                                    if len(drift_tracker) > patience:
-                                        drift_tracker.pop(0)
-
-                                    if len(drift_tracker) == patience and max(drift_tracker) < epsilon:
-                                        print(f"[Early Exit - Test] Semantic drift below {epsilon} for {patience} steps.")
-                                        early_exit = True
-
+                        # --- Early Exit (CSSA logic removed) ---
+                        if self.args.use_cssa_early_exit:
+                            # Simulate semantic drift using a placeholder heuristic (e.g., L1 diff)
+                            # In practice, replace this with a proper semantic drift metric
+                            if it > 0:
+                                semantic_distance = torch.abs(x0_t - x).mean().item()
+                            else:
+                                semantic_distance = 1.0
+                            drift_tracker.append(semantic_distance)
+                            drift_log.append((int(t[0].item()), semantic_distance))
+                            if len(drift_tracker) > patience:
+                                drift_tracker.pop(0)
+                            if len(drift_tracker) == patience and max(drift_tracker) < epsilon:
+                                print(f"[Early Exit] Semantic drift below {epsilon} for {patience} steps.")
+                                early_exit = True
                         if early_exit:
                             break
 
@@ -789,7 +743,7 @@ class Asyrp(object):
         model = model.to(self.device)
         model = torch.nn.DataParallel(model)
 
-        self.semantic_manager.memory_bank = []
+        # Note: All CSSA/semantic_manager memory clearing is removed.
 
         exp_id = os.path.split(self.args.exp)[-1]
         if self.args.load_from_checkpoint:

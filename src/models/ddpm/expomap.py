@@ -310,7 +310,7 @@ class ExponentialMapVanilla2(nn.Module):
         self.temb_proj = nn.Linear(temb_channels, channels)
         self.text_proj = nn.Linear(text_dim, channels * 2) if text_dim is not None else None
 
-        self.scale = nn.Parameter(torch.tensor(0.6))
+        self.scale = nn.Parameter(torch.tensor(0.25))
         self.global_step = 0  # Optional external hook for time gating
 
     def forward(self, h, temb, text_emb=None):
@@ -321,7 +321,7 @@ class ExponentialMapVanilla2(nn.Module):
 
         if (
             self.training and 
-            self.global_step > 1000 and 
+            self.global_step > 2 and 
             text_emb is not None and 
             self.text_proj is not None
         ):
@@ -346,4 +346,77 @@ class ExponentialMapVanilla2(nn.Module):
         manifold_point = manifold_point.permute(0, 3, 1, 2)
         delta_h = manifold_point - h
 
+        # if self.global_step > 2:
+        #     delta_h = delta_h - 0.05 * loss_id  
+        
+        self.global_step += 1
+
         return delta_h
+    
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchdiffeq import odeint
+
+class ExponentialMapTrue(nn.Module):
+    def __init__(self, channels, temb_channels):
+        super().__init__()
+        self.channels = channels
+        self.temb_proj = nn.Linear(temb_channels, channels)
+        self.linear_tangent = nn.Linear(channels, channels)
+        # small helper MLP to predict Christoffel symbols Γᵏᵢⱼ(y)
+        self.gamma_net = nn.Sequential(
+            nn.Linear(channels, channels * channels)
+        )
+        # fixed scaling for ODE step size
+        self.scale = nn.Parameter(torch.tensor(0.6))
+
+    def compute_christoffel(self, y_flat):
+        # y_flat: [B, N, C]
+        B, N, C = y_flat.shape
+        gamma = self.gamma_net(y_flat)               # [B, N, C²]
+        gamma = gamma.view(B, N, C, C)              # [B, N, C, C]
+        # clamp for stability
+        return gamma.clamp(-3.0, 3.0)
+
+    def geodesic_rhs(self, t, state):
+        # state: [B, 2*N*C] = [y_flat, v_flat]
+        B, L = state.shape
+        half = L // 2
+        y_flat = state[:, :half].view(B, -1, self.channels)   # [B, N, C]
+        v_flat = state[:, half:].view(B, -1, self.channels)  # [B, N, C]
+
+        Γ = self.compute_christoffel(y_flat)                  # [B, N, C, C]
+        # dv/dt = - Γᵢⱼᵏ vᵢ vⱼ
+        dv = -torch.einsum('bnij,bni,bnj->bnj', Γ, v_flat, v_flat)
+        dy = v_flat                                          # dy/dt = v
+        return torch.cat([dy.reshape(B, -1), dv.reshape(B, -1)], dim=1)
+
+    def forward(self, h, temb):
+        B, C, H, W = h.shape
+        # project time embedding and form initial manifold point
+        temb_proj = self.temb_proj(temb)[:, :, None, None]  # [B, C, 1, 1]
+        combined = h + temb_proj                            # [B, C, H, W]
+        # --- Begin true exponential map via ODE integration ---
+        # 1) Flatten initial point y0 and compute initial tangent v0
+        y0_flat = combined.permute(0, 2, 3, 1).reshape(B, -1, C)  # [B, N, C]
+        t_vec   = self.linear_tangent(y0_flat)                 # [B, N, C]
+        norm    = torch.norm(t_vec, dim=-1, keepdim=True)
+        dir     = F.normalize(t_vec, dim=-1)
+        v0_flat = (dir * (torch.tanh(norm * self.scale) / (norm + 1e-6))).reshape(B, -1)
+
+        # 2) initial tangent vector
+        # (already computed above, so skip duplicate lines)
+
+        # 3) solve the geodesic ODE from t=0→1
+        state0 = torch.cat([y0_flat.reshape(B, -1), v0_flat], dim=1)
+        t_span = torch.tensor([0.0, 1.0], device=h.device)
+        sol = odeint(self.geodesic_rhs, state0, t_span, method='dopri5',
+                     rtol=1e-4, atol=1e-6)
+
+        # 4) read off the “landed” point γ(1)
+        y1_flat = sol[1][:, : (y0_flat.numel() // B) ].view(B, H, W, C)
+        y1 = y1_flat.permute(0, 3, 1, 2)             # [B,C,H,W]
+
+        return y1 - h

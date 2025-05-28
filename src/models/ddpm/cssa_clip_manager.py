@@ -21,6 +21,14 @@ class SemanticMemoryManager:
             embeddings = self.clip_model.get_image_features(**inputs)
         return embeddings  # [B, 512]
 
+    def get_feature_embedding(self, feat_tensor):
+        """
+        Project high-dimensional latent (e.g., middle_h: [B, C, H, W]) to a semantic embedding using global average pooling.
+        """
+        if feat_tensor.dim() == 4:  # [B, C, H, W]
+            feat_tensor = feat_tensor.mean(dim=[2, 3])  # global average pool -> [B, C]
+        return feat_tensor  # or optionally normalize if needed
+
     def update_memory(self, embedding):
         self.memory_bank.append(embedding)
         if len(self.memory_bank) > 5:  # optional window size
@@ -28,3 +36,8 @@ class SemanticMemoryManager:
 
     def get_memory(self):
         return self.memory_bank
+    
+    # For debugging: log the norm of the CSSA residual
+    def log_residual_norm(self, residual):
+        norm = residual.norm().item()
+        print(f"[CSSA Residual Norm] {norm:.6f}")

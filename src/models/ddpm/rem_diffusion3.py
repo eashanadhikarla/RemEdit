@@ -962,7 +962,7 @@ class DDPM(nn.Module):
 # ==================================================
 ## Exponential Map code moved to another file
 # ==================================================
-from models.ddpm.expomap import ExponentialMapVanilla, ExponentialMapVanilla2
+from models.ddpm.expomap import ExponentialMapVanilla, ExponentialMapVanilla2, ExponentialMapTrue
 # from models.ddpm.expomap import ODEExponentialMap
 # from models.ddpm.expomap import HyperScaleExponentialMap
 
@@ -1000,7 +1000,7 @@ clip_encoder = CLIPWrapper("ViT-B/32", device=device)
 class RiemannianBlock(nn.Module):
     def __init__(self, in_channels, out_channels, temb_channels):
         super(RiemannianBlock, self).__init__()
-        
+
         # Linear projection to transform latent space into geodesic calculation space
         self.linear = nn.Linear(in_channels, out_channels)
         self.temb_proj = nn.Linear(temb_channels, out_channels)
@@ -1010,7 +1010,9 @@ class RiemannianBlock(nn.Module):
         # self.exp_map = ExponentialMapVanilla(out_channels, temb_channels)
         # self.exp_map = ExponentialMap(out_channels, temb_channels, text_dim=512)
         # self.exp_map = ExponentialMap(out_channels, temb_channels, text_dim=512, clip_model=clip_encoder)
-        self.exp_map = ExponentialMapVanilla2(out_channels, temb_channels, text_dim=1024) #, clip_model=clip_encoder)
+
+        # self.exp_map = ExponentialMapVanilla2(out_channels, temb_channels, text_dim=512) #, clip_model=clip_encoder)
+        self.exp_map = ExponentialMapTrue(out_channels, temb_channels)#, text_dim=512)
 
         # # Explicitly use ODEExponentialMap
         # self.exp_map = ODEExponentialMap(out_channels, temb_channels)
@@ -1036,8 +1038,8 @@ class RiemannianBlock(nn.Module):
         h_proj = h_proj.permute(0, 2, 1).view(batch_size, -1, height, width)
 
         # Compute explicit geodesic movement via exponential map
-        # delta_h = self.exp_map(h_proj, temb)
-        delta_h = self.exp_map(h_proj, temb, text_emb=text_emb)
+        delta_h = self.exp_map(h_proj, temb)
+        # delta_h = self.exp_map(h_proj, temb, text_emb=text_emb)
         # delta_h = self.exp_map(h_proj, temb, text_emb=text_emb, use_geodesic=(text_emb is not None))
 
         return delta_h
@@ -1114,8 +1116,8 @@ class DeltaBlock(nn.Module):
         # h_flat = h.view(batch, channels, height * width).permute(0, 2, 1)
         # h = self.mamba_out(h_flat).permute(0, 2, 1).view(batch, channels, height, width)
 
-        # delta_h = self.riemannian_block(h, temb)
-        delta_h = self.riemannian_block(h, temb, text_emb=text_emb)
+        delta_h = self.riemannian_block(h, temb)
+        # delta_h = self.riemannian_block(h, temb, text_emb=text_emb)
         h = h + delta_h
 
         h = self.final_conv(h)

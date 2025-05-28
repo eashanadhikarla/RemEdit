@@ -9,14 +9,14 @@ CUDA_VISIBLE_DEVICES=$gpu
 
 python main.py  --run_train                         \
                 --config $config                    \
-                --exp ./runs/exp13_$guid/$guid      \
+                --exp ./runs/exp13_2_true_$guid/$guid      \
                 --edit_attr $guid                   \
                 --do_train 1                        \
                 --do_test 1                         \
-                --bs_train 4                        \
+                --bs_train 2                        \
                 --bs_test 1                         \
-                --lr_training 0.05                  \
-                --n_train_img 1000                  \
+                --lr_training 0.12                   \
+                --n_train_img 500                  \
                 --accumulation_steps 1              \
                 --n_test_img 50                     \
                 --n_inv_step 50                     \
@@ -36,7 +36,7 @@ python main.py  --run_train                         \
                 --use_id_loss                       \
                 --clip_loss_w 0.8                   \
                 --l1_loss_w 3.0                     \
-                --id_loss_w 2.0                     \
+                --id_loss_w 3.0                     \
                 --use_cssa_early_exit \
                 # --use_cssa \
                 # --cssa_exit_threshold 0.01 \

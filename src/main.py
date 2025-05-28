@@ -195,9 +195,10 @@ def parse_args_and_config():
     parser.add_argument('--get_h_num', type=int, default=0, help='Training batch size during Latent CLR')
     parser.add_argument('--model_ratio', type=float, default=1, help='Degree of change, noise ratio from original and finetuned model.')
 
-    # Cross-Step Semantic Attention (CSSA)
-    parser.add_argument('--use_cssa', action='store_true', default=False, help='Use Cross-Step Semantic Attention during denoising')
+    # # Cross-Step Semantic Attention (CSSA)
+    # parser.add_argument('--use_cssa', action='store_true', default=False, help='Use Cross-Step Semantic Attention during denoising')
     parser.add_argument('--use_cssa_early_exit', action='store_true', default=False, help='Use early stopping based on semantic drift with CLIP embeddings')
+    # parser.add_argument('--cssa_exit_threshold', type=float, default=0.01, help='Threshold for early stopping based on semantic drift')
 
     # DiffStyle
     parser.add_argument('--diff_style', action="store_true")
