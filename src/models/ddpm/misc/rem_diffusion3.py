@@ -962,7 +962,7 @@ class DDPM(nn.Module):
 # ==================================================
 ## Exponential Map code moved to another file
 # ==================================================
-from models.ddpm.expomap import ExponentialMapVanilla, ExponentialMapVanilla2, ExponentialMapTrue
+from RiemannianEdit.src.models.ddpm.expomap_v1 import ExponentialMapVanilla, ExponentialMapVanilla2, ExponentialMapTrue
 # from models.ddpm.expomap import ODEExponentialMap
 # from models.ddpm.expomap import HyperScaleExponentialMap
 

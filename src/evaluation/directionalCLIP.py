@@ -12,17 +12,6 @@ from losses.clip_loss import CLIPLoss
 ## Version 2
 ##############
 
-# def clip_image_similarity(image_one, image_two):
-#     """
-#     Compute CLIP cosine similarity between two images.
-#     This measures how semantically similar the two images are.
-#     """
-#     img_feat_one = encode_image(image_one)
-#     img_feat_two = encode_image(image_two)
-
-#     sim_score = F.cosine_similarity(img_feat_one, img_feat_two).item()
-#     return sim_score
-
 def main(original_dir, edited_dir, caption1, caption2):
     original_dir = Path(original_dir)
     edited_dir = Path(edited_dir)
@@ -102,20 +91,97 @@ if __name__ == "__main__":
         #     "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_500_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
         #     "reconstructed_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_500_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/reconstructed",
         # },
+        # {
+        #     "name" : "exp13b_1000_smile",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_5",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/5_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/5_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_6",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/6_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/6_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_7",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/7_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/7_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_8",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/8_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/8_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_11",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/11_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/11_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_12",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/12_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/12_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_13",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/13_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/13_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name"         : "exp13_true_smiling_14",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/14_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+        #     "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_smiling/14_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        # },
+        # {
+        #     "name" : "exp13_true_fastLR_smiling_100",
+        #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_fastLR_2_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/50/original",
+        #     "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_true_fastLR_2_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/50/edited",
+        # },
         {
-            "name" : "exp13b_1000_smile",
-            # "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
-            # "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
-            # "reconstructed_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/reconstructed",
-            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/0.9_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
-            "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/0.9_smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+            "name" : "exp15_smiling",
+            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        },
+        {
+            "name" : "exp15_mamba_lr0.45_l12.5_smiling",
+            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_lr0.45_l12.5_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_lr0.45_l12.5_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        },
+        {
+            "name" : "exp15_mamba_0.5_l12.5_smiling",
+            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_lr0.5_l12.5_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_lr0.5_l12.5_smiling/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        },
+        {
+            "name" : "exp15_mamba_angry",
+            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_angry/angry_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_angry/angry_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        },
+        {
+            "name" : "exp15_mamba_sad",
+            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        },
+        {
+            "name" : "exp15_mamba_tanned",
+            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_tanned/tanned_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_tanned/tanned_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+        },
+        {
+            "name" : "exp15_mamba_makeup",
+            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_makeup/makeup_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir"   : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp15_mamba_makeup/makeup_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
         },
         # {
         #     "name" : "exp14_sad",
         #     "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp14_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
         #     "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp14_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
         #     "reconstructed_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp14_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/reconstructed",
-        # }
+        # },
     ]
 
     src_txt = "face"
@@ -127,9 +193,9 @@ if __name__ == "__main__":
 
     # Process each experiment
     for exp in experiments:
-        print(f"\n{'='*35}")
+        print(f"\n{'='*50}")
         print(f"Processing experiment: {exp['name']}")
-        print(f"{'='*35}")
+        print(f"{'='*50}")
 
         # Process edited images
         if "smiling" or "smile" in exp['name']:

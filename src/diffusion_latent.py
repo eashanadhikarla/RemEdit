@@ -23,7 +23,8 @@ from losses.clip_loss import CLIPLoss
 # from models.ddpm.diffusion import DDPM
 # from models.ddpm.rem_diffusion import DDPM
 # from models.ddpm.rem_diffusion2 import DDPM
-from models.ddpm.rem_diffusion3 import DDPM
+# from models.ddpm.rem_diffusion3 import DDPM
+from models.ddpm.deltadiffusion import DDPM
 
 from models.improved_ddpm.script_util import i_DDPM
 from models.improved_ddpm.nn import normalization
@@ -554,7 +555,7 @@ class Asyrp(object):
                         output = torch.cat([x, x0_t], dim=0)
                         output = (output + 1) * 0.5
                         grid = tvu.make_grid(output, nrow=self.args.bs_train, padding=1)
-                        tvu.save_image(grid, os.path.join(folder_dir, file_name, f'origin_{int(t[0].item())}.png'), normalization=True)
+                        tvu.save_image(grid, os.path.join(folder_dir, file_name, f'origin_{int(t[0].item())}.png')) # , normalization=True)
                         image_path = os.path.join(folder_dir, file_name, f'origin_{int(t[0].item())}.png')
 
                 x_list.append(x)
@@ -615,8 +616,7 @@ class Asyrp(object):
                             output = torch.cat([x, x0_t], dim=0)
                             output = (output + 1) * 0.5
                             grid = tvu.make_grid(output, nrow=self.args.bs_train, padding=1)
-                            tvu.save_image(grid, os.path.join(folder_dir, file_name, f'delta_h_{int(t[0].item())}.png'), normalization=True)
-
+                            tvu.save_image(grid, os.path.join(folder_dir, file_name, f'delta_h_{int(t[0].item())}.png')) # , normalization=True)
                             image_path = os.path.join(folder_dir, file_name, f'delta_h_{int(t[0].item())}.png')
 
                         if get_delta_hs and t[0]>= self.t_edit:
@@ -647,18 +647,18 @@ class Asyrp(object):
         grid = tvu.make_grid(x, nrow=self.args.bs_train, padding=1)
 
         image_save_path = os.path.join(folder_dir, f'{file_name}_ngen{self.args.n_train_step}.png')
-        tvu.save_image(grid, os.path.join(folder_dir, f'{file_name}_ngen{self.args.n_train_step}.png'), normalization=True)
+        tvu.save_image(grid, os.path.join(folder_dir, f'{file_name}_ngen{self.args.n_train_step}.png')) # , normalization=True)
 
         if len(x) == 2:
             os.makedirs(os.path.join(folder_dir, 'original'), exist_ok=True)
             os.makedirs(os.path.join(folder_dir, 'edited'), exist_ok=True)
             # original
-            tvu.save_image(x[0], os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png'), normalization=True)
+            tvu.save_image(x[0], os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png')) # , normalization=True)
             image_save_path = os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png')
 
             # edited
             idx_edited_0 = 0 + self.args.bs_train
-            tvu.save_image(x[idx_edited_0], os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png'), normalization=True)
+            tvu.save_image(x[idx_edited_0], os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png')) # , normalization=True)
             image_save_path = os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png')
 
         else:
@@ -666,17 +666,17 @@ class Asyrp(object):
             os.makedirs(os.path.join(folder_dir, 'reconstructed'), exist_ok=True)
             os.makedirs(os.path.join(folder_dir, 'edited'), exist_ok=True)
             # original
-            tvu.save_image(x[0], os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png'), normalization=True)
+            tvu.save_image(x[0], os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png')) # , normalization=True)
             image_save_path = os.path.join(folder_dir, 'original', f'{file_name}_ngen{self.args.n_train_step}_original.png')
 
             # reconstructed
             idx_recon_0 = 0 + self.args.bs_train
-            tvu.save_image(x[idx_recon_0], os.path.join(folder_dir, 'reconstructed', f'{file_name}_ngen{self.args.n_train_step}_reconstructed.png'), normalization=True)
+            tvu.save_image(x[idx_recon_0], os.path.join(folder_dir, 'reconstructed', f'{file_name}_ngen{self.args.n_train_step}_reconstructed.png')) # , normalization=True)
             image_save_path = os.path.join(folder_dir, 'reconstructed', f'{file_name}_ngen{self.args.n_train_step}_reconstructed.png')
 
             # edited
             idx_edited_0 = 0 + (self.args.bs_train * 2)
-            tvu.save_image(x[idx_edited_0], os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png'), normalization=True)
+            tvu.save_image(x[idx_edited_0], os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png')) # , normalization=True)
             image_save_path = os.path.join(folder_dir, 'edited', f'{file_name}_ngen{self.args.n_train_step}_edited.png')
 
         # --- Save semantic drift log if enabled ---

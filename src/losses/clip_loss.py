@@ -32,7 +32,15 @@ class CLIPLoss(torch.nn.Module):
         super(CLIPLoss, self).__init__()
 
         self.device = device
+
+        clip_model_list = ['RN50', 'RN101', 'RN50x4', 'RN50x16', 'RN50x64', 'ViT-B/32', 'ViT-B/16', 'ViT-L/14', 'ViT-L/14@336px']
+        clip_model = clip_model_list[5]
+
         self.model, clip_preprocess = clip.load(clip_model, device=self.device)
+
+        for i, t in enumerate(clip_preprocess.transforms):
+            if isinstance(t, transforms.Resize):
+                clip_preprocess.transforms[i] = transforms.Resize(t.size, interpolation=t.interpolation, antialias=True)
 
         self.clip_preprocess = clip_preprocess
 
