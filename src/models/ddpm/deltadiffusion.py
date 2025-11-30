@@ -483,7 +483,7 @@ class DDPM(nn.Module):
             # check t_edit
             if t[0] >= t_edit:
                 # use DeltaBlock
-                if delta_h is None:  # Asyrp
+                if delta_h is None:  # RemEdit
                     h2 = h * hs_coeff[0]
                     for i in range(index + 1):
                         # delta_h = getattr(self, f"layer_{i}")(

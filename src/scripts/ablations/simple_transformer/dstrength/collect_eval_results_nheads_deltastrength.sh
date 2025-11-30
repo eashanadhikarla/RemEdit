@@ -13,7 +13,7 @@ epoch=5
 # python main.py  --run_test      \
 #     --config $config                \
 #     --exp ../../eval_runs/epoch${epoch}_dstrength_abl_transf_pc_conv_l1_d2048_pixar         \
-#     --manual_checkpoint_name /home/parting/master_AI/DL2/DL2-2023-group-15/src/lib/asyrp/checkpoint/pixar_LC_CelebA_HQ_t999_ninv40_ngen40_0.pth \
+#     --manual_checkpoint_name /home/parting/master_AI/DL2/DL2-2023-group-15/src/lib/RemEdit/checkpoint/pixar_LC_CelebA_HQ_t999_ninv40_ngen40_0.pth \
 #     --edit_attr $guid               \
 #     --do_train 0                    \
 #     --do_test 1                     \

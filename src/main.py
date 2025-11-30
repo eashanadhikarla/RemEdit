@@ -7,7 +7,7 @@ import argparse
 import traceback
 import numpy as np
 
-from diffusion_latent import Asyrp
+from diffusion_latent import RemEdit
 
 
 def parse_args_and_config():
@@ -328,7 +328,7 @@ def main():
     if torch.cuda.is_available():
         assert args.bs_train % torch.cuda.device_count() == 0, f"Number of GPUs ({torch.cuda.device_count()}) must be a multiple of batch size ({args.bs_train})"
 
-    runner = Asyrp(args, config) # if you want to specify the device, add device="something" in the argument
+    runner = RemEdit(args, config) # if you want to specify the device, add device="something" in the argument
 
     try:
         if args.run_train:

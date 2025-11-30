@@ -1,6 +1,0 @@
-exp1
-exp2
-exp3: Conv2D + Riemannian + Exp Map (hard normalization, sin) (50)
-exp4: Conv2D + Riemannian + Exp Map (no hard normalization, tanh) (500)
-exp5: Conv2D + Riemannian + Exp Map (no hard normalization, tanh) (1000)
-exp6: Conv2D + Riemannian + Exp Map (no hard normalization, tanh) + denoising_step edit (50)

@@ -19,11 +19,6 @@ import torch.nn.functional as F
 
 from losses import id_loss
 from losses.clip_loss import CLIPLoss
-
-# from models.ddpm.diffusion import DDPM
-# from models.ddpm.rem_diffusion import DDPM
-# from models.ddpm.rem_diffusion2 import DDPM
-# from models.ddpm.rem_diffusion3 import DDPM
 from models.ddpm.deltadiffusion import DDPM
 
 from models.improved_ddpm.script_util import i_DDPM
@@ -36,9 +31,7 @@ from datasets.imagenet_dic import IMAGENET_DIC
 from configs.paths_config import DATASET_PATHS, MODEL_PATHS
 from transformers.optimization import Adafactor, AdafactorSchedule
 
-
-
-class Asyrp(object):
+class RemEdit(object):
     def __init__(self, args, config, device=None):
         # CLIP similarity logging stuff
         self.eval_clip_similarities = []
@@ -51,9 +44,6 @@ class Asyrp(object):
             device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         self.device = device
         self.accumulation_steps = args.accumulation_steps
-
-
-
         self.model_var_type = config.model.var_type
         betas = get_beta_schedule(
             beta_start=config.diffusion.beta_start,
@@ -65,18 +55,15 @@ class Asyrp(object):
 
         alphas = 1.0 - betas
         alphas_cumprod = np.cumprod(alphas, axis=0)
-
         alphas_cumprod_prev = np.append(1.0, alphas_cumprod[:-1])
-        posterior_variance = betas * \
-                             (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
+
+        posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
         self.alphas_cumprod = alphas_cumprod
 
         if self.model_var_type == "fixedlarge":
             self.logvar = np.log(np.append(posterior_variance[1], betas[1:]))
-
         elif self.model_var_type == 'fixedsmall':
             self.logvar = np.log(np.maximum(posterior_variance, 1e-20))
-
         self.learn_sigma = False # it will be changed in load_pretrained_model()
 
         # ----------- Editing txt -----------#
@@ -127,7 +114,6 @@ class Asyrp(object):
         
         # Printing the entire model architecture.
         # print(model)
-        
         return model
 
 
@@ -135,12 +121,8 @@ class Asyrp(object):
         print("Running Training...")
 
         # ----------- Losses -----------#
-        # We tried to use ID loss and it works well.
-        # But it is not used in the paper because it is not necessary.
-        # We just leave the code here for future research.
         if self.args.use_id_loss:
             id_loss_func = id_loss.IDLoss().to(self.device)
-
         # Set self.t_edit & self.t_addnoise & return cosine similarity of attribute
         cosine, clip_loss_func = self.set_t_edit_t_addnoise(LPIPS_th=self.args.lpips_edit_th, 
                                                             LPIPS_addnoise_th=self.args.lpips_addnoise_th,
@@ -152,7 +134,6 @@ class Asyrp(object):
             p.requires_grad = False
         for p in clip_loss_func.model.parameters():
             p.requires_grad = False
-
         self.clip_loss_func = clip_loss_func
 
         # ----------- Get seq -----------#    
@@ -320,7 +301,7 @@ class Asyrp(object):
 
                         # original DDIM
                         x_origin = x_lat_tensor.to(self.device)
-                        # editing by Asyrp
+                        # editing by RemEdit
                         xt_next = x_lat_tensor.to(self.device)
 
                         # put this here as the old trainign loop had this at the top, so 

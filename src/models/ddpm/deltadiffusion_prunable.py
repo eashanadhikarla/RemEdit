@@ -1,49 +1,10 @@
 import math
 import torch
 import torch.nn as nn
-# from diffusers.models.attention import AdaGroupNorm
-from diffusers.models.attention import AdaLayerNorm as AdaGroupNorm
-from diffusers.models.unet_2d_blocks import UNetMidBlock2DCrossAttn
-
-from mamba_ssm import Mamba, Mamba2
 import torch.nn.functional as F
-
-
-def slerp(t, v0, v1):
-    _shape = v0.shape
-
-    v0_origin = v0.clone()
-    v1_origin = v1.clone()
-
-    v0_copy = v0.view(_shape[0], -1)
-    v1_copy = v1.view(_shape[0], -1)
-
-    # Normalize the vectors to get the directions and angles
-    v0 = v0 / torch.norm(v0_copy, dim=1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-    v1 = v1 / torch.norm(v1_copy, dim=1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-
-    v0_copy = v0.view(_shape[0], -1)
-    v1_copy = v1.view(_shape[0], -1)
-
-    # Dot product with the normalized vectors (can't use np.dot in W)
-    dot = torch.sum(v0_copy * v1_copy, dim=1, keepdim=True).squeeze(-1)
-
-    # Calculate initial angle between v0 and v1
-    theta_0 = torch.acos(dot)
-    sin_theta_0 = torch.sin(theta_0)
-
-    # Angle at timestep t
-    theta_t = theta_0 * t
-    sin_theta_t = torch.sin(theta_t)
-
-    # Finish the slerp algorithm
-    s0 = torch.sin(theta_0 - theta_t) / sin_theta_0
-    s1 = sin_theta_t / sin_theta_0
-    s0 = s0.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-    s1 = s1.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-    v2 = s0 * v0_origin + s1 * v1_origin
-    return v2
-
+from models.ddpm.expomap import ExponentialMapTrue
+from flashfftconv import FlashFFTConv
+from diffusers.models.attention import AdaLayerNorm as AdaGroupNorm
 
 def get_timestep_embedding(timesteps, embedding_dim):
     """
@@ -65,7 +26,6 @@ def get_timestep_embedding(timesteps, embedding_dim):
         emb = torch.nn.functional.pad(emb, (0, 1, 0, 0))
     return emb
 
-
 def nonlinearity(x):
     # swish
     return x * torch.sigmoid(x)
@@ -76,147 +36,214 @@ def Normalize(in_channels):
         num_groups=32, num_channels=in_channels, eps=1e-6, affine=True
     )
 
-
 class Upsample(nn.Module):
     def __init__(self, in_channels, with_conv):
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
-            self.conv = torch.nn.Conv2d(
-                in_channels, in_channels, kernel_size=3, stride=1, padding=1
-            )
-
+            self.conv = torch.nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
     def forward(self, x):
-        x = torch.nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
+        x = F.interpolate(x, scale_factor=2.0, mode="nearest")
         if self.with_conv:
             x = self.conv(x)
         return x
-
 
 class Downsample(nn.Module):
     def __init__(self, in_channels, with_conv):
         super().__init__()
         self.with_conv = with_conv
         if self.with_conv:
-            # no asymmetric padding in torch conv, must do it ourselves
-            self.conv = torch.nn.Conv2d(
-                in_channels, in_channels, kernel_size=3, stride=2, padding=0
-            )
-
+            self.conv = torch.nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, padding=0)
     def forward(self, x):
         if self.with_conv:
             pad = (0, 1, 0, 1)
-            x = torch.nn.functional.pad(x, pad, mode="constant", value=0)
+            x = F.pad(x, pad, mode="constant", value=0)
             x = self.conv(x)
         else:
-            x = torch.nn.functional.avg_pool2d(x, kernel_size=2, stride=2)
+            x = F.avg_pool2d(x, kernel_size=2, stride=2)
         return x
 
-
 class ResnetBlock(nn.Module):
-    def __init__(
-        self,
-        *,
-        in_channels,
-        out_channels=None,
-        conv_shortcut=False,
-        dropout,
-        temb_channels=512,
-    ):
+    def __init__(self, *, in_channels, out_channels=None, conv_shortcut=False, dropout, temb_channels=512):
         super().__init__()
         self.in_channels = in_channels
         out_channels = in_channels if out_channels is None else out_channels
         self.out_channels = out_channels
         self.use_conv_shortcut = conv_shortcut
-
         self.norm1 = Normalize(in_channels)
-        self.conv1 = torch.nn.Conv2d(
-            in_channels, out_channels, kernel_size=3, stride=1, padding=1
-        )
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
         self.temb_proj = torch.nn.Linear(temb_channels, out_channels)
         self.norm2 = Normalize(out_channels)
         self.dropout = torch.nn.Dropout(dropout)
-        self.conv2 = torch.nn.Conv2d(
-            out_channels, out_channels, kernel_size=3, stride=1, padding=1
-        )
+        self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
         if self.in_channels != self.out_channels:
             if self.use_conv_shortcut:
-                self.conv_shortcut = torch.nn.Conv2d(
-                    in_channels, out_channels, kernel_size=3, stride=1, padding=1
-                )
+                self.conv_shortcut = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
             else:
-                self.nin_shortcut = torch.nn.Conv2d(
-                    in_channels, out_channels, kernel_size=1, stride=1, padding=0
-                )
-
+                self.nin_shortcut = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
     def forward(self, x, temb):
         h = x
         h = self.norm1(h)
         h = nonlinearity(h)
         h = self.conv1(h)
-
         h = h + self.temb_proj(nonlinearity(temb))[:, :, None, None]
-
         h = self.norm2(h)
         h = nonlinearity(h)
         h = self.dropout(h)
         h = self.conv2(h)
-
         if self.in_channels != self.out_channels:
             if self.use_conv_shortcut:
                 x = self.conv_shortcut(x)
             else:
                 x = self.nin_shortcut(x)
-
         return x + h
 
+class PruningHead(nn.Module):
+    def __init__(self, token_dim, edit_vector_dim, hidden_dim: int = 256):
+        super().__init__()
+        # still exactly three Linear layers
+        self.layer1 = nn.Linear(token_dim + edit_vector_dim, hidden_dim)
+        self.layer2 = nn.Linear(hidden_dim, hidden_dim // 2)
+        self.layer3 = nn.Linear(hidden_dim // 2, 1)
+        self.act = nn.SiLU()
+
+        # remember the split index once
+        self._split_idx = token_dim          # weight[:, :split] → tokens
+                                              # weight[:, split:] → edit vec
+
+    def forward(self, tokens: torch.Tensor, edit_vec: torch.Tensor | None):
+        """
+        tokens   : [B, N, C_token]
+        edit_vec : [B, C_edit]  or None
+        returns  : [B, N, 1]
+        """
+        B, N, _ = tokens.shape
+        if edit_vec is None:
+            edit_vec = tokens.new_zeros(B, self.layer1.in_features - tokens.size(-1))
+
+        # ------- fast manual linear: token part per-token, edit part once -------
+        W = self.layer1.weight                                     # [H, C_tot]
+        b = self.layer1.bias                                       # [H]
+
+        W_tok  = W[:, :self._split_idx]                            # [H, C_token]
+        W_edit = W[:, self._split_idx:]                            # [H, C_edit]
+
+        # token contribution  : (B·N , C_token) @ W_tok.T  →  [B,N,H]
+        tok_proj = torch.matmul(tokens.reshape(-1, tokens.size(-1)), W_tok.T) \
+                        .reshape(B, N, -1)
+
+        # edit contribution (once per image) : [B,H] → broadcast
+        edit_proj = torch.matmul(edit_vec, W_edit.T) + b           # [B,H]
+        x = tok_proj + edit_proj.unsqueeze(1)                      # broadcast add
+        x = self.act(x)
+
+        # the rest is unchanged
+        x = self.act(self.layer2(x))
+        x = self.layer3(x)
+        return torch.sigmoid(x)                                              # [B, N, 1]
 
 class AttnBlock(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
         self.in_channels = in_channels
-
         self.norm = Normalize(in_channels)
-        self.q = torch.nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
-        )
-        self.k = torch.nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
-        )
-        self.v = torch.nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
-        )
-        self.proj_out = torch.nn.Conv2d(
-            in_channels, in_channels, kernel_size=1, stride=1, padding=0
-        )
+        self.q = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
+        self.k = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
+        self.v = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
+        self.proj_out = torch.nn.Conv2d(in_channels, in_channels, kernel_size=1, stride=1, padding=0)
+        self.is_pruning_enabled = False
+        self.pruning_head = False
+        self.prune_ratio = None # 0.0
 
-    def forward(self, x):
-        h_ = x
-        h_ = self.norm(h_)
+    def _standard_attention(self, x):
+        h_ = self.norm(x)
         q = self.q(h_)
         k = self.k(h_)
         v = self.v(h_)
-
-        # compute attention
         b, c, h, w = q.shape
-        q = q.reshape(b, c, h * w)
-        q = q.permute(0, 2, 1)  # b,hw,c
-        k = k.reshape(b, c, h * w)  # b,c,hw
-        w_ = torch.bmm(q, k)  # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
-        w_ = w_ * (int(c) ** (-0.5))
-        w_ = torch.nn.functional.softmax(w_, dim=2)
-
-        # attend to values
+        q = q.reshape(b, c, h * w).permute(0, 2, 1)
+        k = k.reshape(b, c, h * w)
+        w_ = torch.bmm(q, k) * (int(c) ** (-0.5))
+        w_ = F.softmax(w_, dim=2)
         v = v.reshape(b, c, h * w)
-        w_ = w_.permute(0, 2, 1)  # b,hw,hw (first hw of k, second of q)
-        # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
+        w_ = w_.permute(0, 2, 1)
         h_ = torch.bmm(v, w_)
         h_ = h_.reshape(b, c, h, w)
-
         h_ = self.proj_out(h_)
-
         return x + h_
 
+    def _soft_pruning_for_training(self, x, clip_direction):
+        unpruned_output = self._standard_attention(x)
+        h_ = self.norm(x)
+        b, c, h, w = h_.shape
+        tokens = h_.view(b, c, h * w).permute(0, 2, 1)
+        importance_scores = self.pruning_head(tokens.detach(), clip_direction.detach())
+        attention_delta = unpruned_output - x
+        gated_delta = attention_delta * importance_scores.permute(0, 2, 1).view(b, 1, h, w)
+        gated_output = x + gated_delta
+        return {
+            "gated_output": gated_output, 
+            "unpruned_output": unpruned_output, 
+            "scores": importance_scores
+            }
+
+    def _hard_pruning_for_inference(self, x, clip_direction):
+        if x==None:
+            print("x is None inside _hard_pruning_for_inference")
+            exit(0)
+        if clip_direction == None:
+            print("Clip direction is None inside _hard_pruning_for_inference")
+            exit(0)
+
+        b, c, h, w = x.shape
+        n = h * w
+        h_ = self.norm(x)
+        tokens = h_.view(b, c, n).permute(0, 2, 1)
+        importance_scores = self.pruning_head(tokens.detach(), clip_direction.detach())
+
+        num_to_keep = int(n * (1.0 - self.prune_ratio))
+        if num_to_keep < 1: num_to_keep = 1
+
+        _, keep_indices = torch.topk(importance_scores.squeeze(-1), k=num_to_keep, dim=1)
+
+        q_all = self.q(h_).view(b, c, n).permute(0, 2, 1)
+        k_all = self.k(h_).view(b, c, n).permute(0, 2, 1)
+        v_all = self.v(h_).view(b, c, n).permute(0, 2, 1)
+
+        gather_indices = keep_indices.unsqueeze(-1).expand(-1, -1, c)
+        q_kept = torch.gather(q_all, 1, gather_indices)
+        k_kept = torch.gather(k_all, 1, gather_indices)
+        v_kept = torch.gather(v_all, 1, gather_indices)
+
+        attn_weights = torch.bmm(q_kept, k_kept.transpose(1, 2)) * (c ** (-0.5))
+        attn_weights = F.softmax(attn_weights, dim=2)
+        attended_v = torch.bmm(attn_weights, v_kept)
+
+        attn_result = torch.zeros_like(tokens)
+        attn_result.scatter_(1, gather_indices, attended_v)
+
+        attn_result = attn_result.transpose(1, 2).reshape(b, c, h, w)
+        h_out = self.proj_out(attn_result)
+
+        return x + h_out
+
+    def forward(self, x, clip_direction=None, prune_ratio=None):
+        self.prune_ratio = prune_ratio
+
+        ## FIX: Strict bypass
+        if not self.is_pruning_enabled or self.prune_ratio <= 0.0 or self.pruning_head is None:
+            # print("Running NO pruning")
+            return self._standard_attention(x)
+
+        if self.pruning_head.training:
+            # print("Running soft pruning")
+            return self._soft_pruning_for_training(x, clip_direction)
+        
+        if clip_direction is not None:
+            # print("Running hard pruning")
+            return self._hard_pruning_for_inference(x, clip_direction)
+
+        return self._standard_attention(x)
 
 class DeltaBlock_global(nn.Module):
     def __init__(
@@ -276,14 +303,13 @@ class DeltaBlock_global(nn.Module):
         h = self.conv4(h)
         return h
 
-
 class DDPM(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
         ch, out_ch, ch_mult = (
-            config.model.ch,
-            config.model.out_ch,
+            config.model.ch, 
+            config.model.out_ch, 
             tuple(config.model.ch_mult),
         )
         num_res_blocks = config.model.num_res_blocks
@@ -300,20 +326,14 @@ class DDPM(nn.Module):
         self.resolution = resolution
         self.in_channels = in_channels
 
-        # timestep embedding
         self.temb = nn.Module()
-        self.temb.dense = nn.ModuleList(
-            [
-                torch.nn.Linear(self.ch, self.temb_ch),
-                torch.nn.Linear(self.temb_ch, self.temb_ch),
-            ]
-        )
+        self.temb.dense = nn.ModuleList([
+            torch.nn.Linear(self.ch, self.temb_ch),
+            torch.nn.Linear(self.temb_ch, self.temb_ch),
+        ])
 
-        # downsampling
-        self.conv_in = torch.nn.Conv2d(
-            in_channels, self.ch, kernel_size=3, stride=1, padding=1
-        )
-
+        self.conv_in = torch.nn.Conv2d(in_channels, self.ch, kernel_size=3, stride=1, padding=1)
+        
         curr_res = resolution
         in_ch_mult = (1,) + ch_mult
         self.down = nn.ModuleList()
@@ -324,17 +344,10 @@ class DDPM(nn.Module):
             block_in = ch * in_ch_mult[i_level]
             block_out = ch * ch_mult[i_level]
             for i_block in range(self.num_res_blocks):
-                block.append(
-                    ResnetBlock(
-                        in_channels=block_in,
-                        out_channels=block_out,
-                        temb_channels=self.temb_ch,
-                        dropout=dropout,
-                    )
-                )
+                block.append(ResnetBlock(in_channels=block_in, out_channels=block_out, temb_channels=self.temb_ch, dropout=dropout))
                 block_in = block_out
                 if curr_res in attn_resolutions:
-                    attn.append(AttnBlock(block_in))
+                    attn.append(AttnBlock(block_in)) # This will now be our prunable version
             down = nn.Module()
             down.block = block
             down.attn = attn
@@ -342,24 +355,12 @@ class DDPM(nn.Module):
                 down.downsample = Downsample(block_in, resamp_with_conv)
                 curr_res = curr_res // 2
             self.down.append(down)
-
-        # middle
+        
         self.mid = nn.Module()
-        self.mid.block_1 = ResnetBlock(
-            in_channels=block_in,
-            out_channels=block_in,
-            temb_channels=self.temb_ch,
-            dropout=dropout,
-        )
-        self.mid.attn_1 = AttnBlock(block_in)
-        self.mid.block_2 = ResnetBlock(
-            in_channels=block_in,
-            out_channels=block_in,
-            temb_channels=self.temb_ch,
-            dropout=dropout,
-        )
-
-        # upsampling
+        self.mid.block_1 = ResnetBlock(in_channels=block_in, out_channels=block_in, temb_channels=self.temb_ch, dropout=dropout)
+        self.mid.attn_1 = AttnBlock(block_in) # Prunable version
+        self.mid.block_2 = ResnetBlock(in_channels=block_in, out_channels=block_in, temb_channels=self.temb_ch, dropout=dropout)
+        
         self.up = nn.ModuleList()
         for i_level in reversed(range(self.num_resolutions)):
             block = nn.ModuleList()
@@ -369,30 +370,113 @@ class DDPM(nn.Module):
             for i_block in range(self.num_res_blocks + 1):
                 if i_block == self.num_res_blocks:
                     skip_in = ch * in_ch_mult[i_level]
-                block.append(
-                    ResnetBlock(
-                        in_channels=block_in + skip_in,
-                        out_channels=block_out,
-                        temb_channels=self.temb_ch,
-                        dropout=dropout,
-                    )
-                )
+                block.append(ResnetBlock(in_channels=block_in + skip_in, out_channels=block_out, temb_channels=self.temb_ch, dropout=dropout))
                 block_in = block_out
                 if curr_res in attn_resolutions:
-                    attn.append(AttnBlock(block_in))
+                    attn.append(AttnBlock(block_in)) # Prunable version
             up = nn.Module()
             up.block = block
             up.attn = attn
             if i_level != 0:
                 up.upsample = Upsample(block_in, resamp_with_conv)
                 curr_res = curr_res * 2
-            self.up.insert(0, up)  # prepend to get consistent order
+            self.up.insert(0, up)
 
-        # end
         self.norm_out = Normalize(block_in)
-        self.conv_out = torch.nn.Conv2d(
-            block_in, out_ch, kernel_size=3, stride=1, padding=1
-        )
+        self.conv_out = torch.nn.Conv2d(block_in, out_ch, kernel_size=3, stride=1, padding=1)
+
+        # --- Pruning Specific Setup ---
+        token_dim = config.model.ch * config.model.ch_mult[-1]
+        edit_vector_dim = 512
+        self.pruning_head = PruningHead(token_dim, edit_vector_dim)
+        for module in self.modules():
+            if isinstance(module, AttnBlock):
+                module.pruning_head = self.pruning_head
+
+    def set_pruning_status(self, is_enabled: bool, prune_ratio: float = 0.0):
+        for module in self.modules():
+            if isinstance(module, AttnBlock):
+                module.is_pruning_enabled = is_enabled
+                module.prune_ratio = prune_ratio
+
+    def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False, clip_direction=None, prune_ratio=0.2):
+        # prune_ratio = kwargs.get('prune_ratio', 0.0)
+        
+        temb = self.get_temb(t)
+        hs = [self.conv_in(x)]
+        attn_outputs_for_loss = []
+
+        # Downsampling
+        for i_level in range(self.num_resolutions):
+            for i_block in range(self.num_res_blocks):
+                h = self.down[i_level].block[i_block](hs[-1], temb)
+                if len(self.down[i_level].attn) > 0:
+                    output = self.down[i_level].attn[i_block](h, clip_direction=clip_direction, prune_ratio=prune_ratio)
+                    if isinstance(output, dict):
+                        attn_outputs_for_loss.append(output)
+                        # if self.prune_ratio > 0.0:
+                        if "gated_output" in output and (self.prune_ratio > 0.0 or self.pruning_head is not None):
+                            h = output['gated_output']
+                        else:
+                            h = output['unpruned_output']
+                    else:
+                        h = output
+                hs.append(h)
+            if i_level != self.num_resolutions - 1:
+                hs.append(self.down[i_level].downsample(hs[-1]))
+
+        # Middle
+        h = hs[-1]
+        h = self.mid.block_1(h, temb)
+        output = self.mid.attn_1(h, clip_direction=clip_direction, prune_ratio=prune_ratio)
+        if isinstance(output, dict):
+            attn_outputs_for_loss.append(output)
+            if "gated_output" in output and (self.prune_ratio > 0.0 or self.pruning_head is not None):
+                h = output['gated_output']
+            else:
+                h = output['unpruned_output']
+        else:
+            h = output
+        h = self.mid.block_2(h, temb)
+        middle_h = h
+        
+        # Editing Logic (Single Path)
+        if index is not None and t[0] >= t_edit:
+            if delta_h is None:
+                h2_calc = h * hs_coeff[0]
+                for i in range(index + 1):
+                    current_delta_h = getattr(self, f"layer_{i}")(h, None if ignore_timestep else temb, text_emb=clip_direction)
+                    h2_calc += current_delta_h * hs_coeff[i + 1]
+                h = h2_calc
+        
+        # Upsampling
+        for i_level in reversed(range(self.num_resolutions)):
+            for i_block in range(self.num_res_blocks + 1):
+                h = self.up[i_level].block[i_block](torch.cat([h, hs.pop()], dim=1), temb)
+                if len(self.up[i_level].attn) > 0:
+                    output = self.up[i_level].attn[i_block](h, clip_direction=clip_direction, prune_ratio=prune_ratio)
+                    if isinstance(output, dict):
+                        attn_outputs_for_loss.append(output)
+                        if "gated_output" in output and (self.prune_ratio > 0.0 or self.pruning_head is not None):
+                            h = output['gated_output']
+                        else:
+                            h = output['unpruned_output']
+                    else:
+                        h = output
+            if i_level != 0:
+                h = self.up[i_level].upsample(h)
+        
+        h = self.norm_out(h)
+        h = nonlinearity(h)
+        h = self.conv_out(h)
+        
+        et = h
+        et_modified = h if index is not None else None
+
+        if self.pruning_head.training:
+            return et, et_modified, delta_h, middle_h, attn_outputs_for_loss
+        else:
+            return et, et_modified, delta_h, middle_h
 
     def setattr_layers(self, nums):
         ch, ch_mult = self.config.model.ch, tuple(self.config.model.ch_mult)
@@ -400,23 +484,24 @@ class DDPM(nn.Module):
         for i_level in range(self.num_resolutions):
             block_in = ch * ch_mult[i_level]
 
+        # FIX: Determine the device from an existing parameter
+        device = self.conv_in.weight.device
+
         for i in range(nums):
-            setattr(
-                self,
-                f"layer_{i}",
-                DeltaBlock(
-                    in_channels=block_in,
-                    out_channels=block_in,
-                    temb_channels=self.temb_ch,
-                    dropout=0.0,
-                    layer_type=self.db_layer_type,
-                    nheads=self.db_nheads,
-                    num_layers=self.db_num_layers,
-                    dim_feedforward=self.db_dim_feedforward,
-                    emb_type=self.db_emb_type,
-                    # use_midblock=self.use_midblock
-                ),
+            delta_block_layer = DeltaBlock(
+                in_channels=block_in,
+                out_channels=block_in,
+                temb_channels=self.temb_ch,
+                dropout=0.0,
+                layer_type=self.db_layer_type,
+                nheads=self.db_nheads,
+                num_layers=self.db_num_layers,
+                dim_feedforward=self.db_dim_feedforward,
+                emb_type=self.db_emb_type,
             )
+
+            setattr(self, f"layer_{i}", delta_block_layer.to(device))
+
 
     def setattr_global_layer(self, nums):
         ch, ch_mult = self.config.model.ch, tuple(self.config.model.ch_mult)
@@ -443,9 +528,7 @@ class DDPM(nn.Module):
         temb = self.temb.dense[1](temb)
         return temb
 
-    # def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False):
-    def forward(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, use_mask=False, clip_direction=None):
-        # print(f"[DEBUG] Input shape to model: {x.shape}, expected resolution: {self.resolution}")
+    def forward_layer_check(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False, prune_ratio=0.0):
         assert x.shape[2] == x.shape[3] == self.resolution
 
         # timestep embedding
@@ -455,124 +538,16 @@ class DDPM(nn.Module):
         temb = self.temb.dense[1](temb)
         cnt = 0
 
-        # downsampling
-        hs = [self.conv_in(x)]
-        for i_level in range(self.num_resolutions):
-            for i_block in range(self.num_res_blocks):
-                h = self.down[i_level].block[i_block](hs[-1], temb)
-                if len(self.down[i_level].attn) > 0:
-                    h = self.down[i_level].attn[i_block](h)
-                hs.append(h)
-
-            if i_level != self.num_resolutions - 1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
-
-        # middle
-        h = hs[-1]
-        h = self.mid.block_1(h, temb)
-        h = self.mid.attn_1(h)
-        h = self.mid.block_2(h, temb)
-        middle_h = h
-        h2 = None
-
-        if index is not None:
-            # assert len(hs_coeff) == index + 1 + 1
-            # check t_edit
-            if t[0] >= t_edit:
-                # use DeltaBlock
-                if delta_h is None:  # Asyrp
-                    h2 = h * hs_coeff[0]
-                    for i in range(index + 1):
-                        # delta_h = getattr(self, f"layer_{i}")(
-                        #     h, None if ignore_timestep else temb
-                        # )
-                        delta_h = getattr(self, f"layer_{i}")(
-                            h, None if ignore_timestep else temb, text_emb=clip_direction
-                        )
-                        h2 += delta_h * hs_coeff[i + 1]
-
-                # use input delta_h  : even tough you does not use DeltaBlock, you need to use index is 0.
-                else:  # DiffStyle; Just ignore this code. We will update about it in README.md later.
-                    if use_mask:
-                        mask = torch.zeros_like(h)
-                        mask[:, :, 4:-1, 3:5] = 1.0
-                        inverted_mask = 1 - mask
-
-                        masked_delta_h = delta_h * mask
-                        masked_h = h * mask
-
-                        partial_h2 = slerp(1 - hs_coeff[0], masked_h, masked_delta_h)
-                        h2 = partial_h2 + inverted_mask * h
-
-                    else:
-                        h_shape = h.shape
-                        h_copy = h.clone().view(h_shape[0], -1)
-                        delta_h_copy = delta_h.clone().view(h_shape[0], -1)
-
-                        h_norm = (torch.norm(h_copy, dim=1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1))
-                        delta_h_norm = (torch.norm(delta_h_copy, dim=1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1))
-                        normalized_delta_h = h_norm * delta_h / delta_h_norm
-                        h2 = slerp(1.0 - hs_coeff[0], h, normalized_delta_h)
-            # when t[0] < t_edit : pass the delta_h
-            else:
-                h2 = h
-
-            hs_index = -1
-
-            for i_level in reversed(range(self.num_resolutions)):
-                for i_block in range(self.num_res_blocks + 1):
-                    h2 = self.up[i_level].block[i_block](
-                        torch.cat([h2, hs[hs_index]], dim=1), temb
-                    )
-                    hs_index -= 1
-                    if len(self.up[i_level].attn) > 0:
-                        h2 = self.up[i_level].attn[i_block](h2)
-                if i_level != 0:
-                    h2 = self.up[i_level].upsample(h2)
-
-            # end
-            h2 = self.norm_out(h2)
-            h2 = nonlinearity(h2)
-            h2 = self.conv_out(h2)
-
-        # upsampling
-        for i_level in reversed(range(self.num_resolutions)):
-            for i_block in range(self.num_res_blocks + 1):
-                h = self.up[i_level].block[i_block](
-                    torch.cat([h, hs.pop()], dim=1), temb
-                )
-                if len(self.up[i_level].attn) > 0:
-                    h = self.up[i_level].attn[i_block](h)
-
-            if i_level != 0:
-                h = self.up[i_level].upsample(h)
-
-        # end
-        h = self.norm_out(h)
-        h = nonlinearity(h)
-        h = self.conv_out(h)
-        return h, h2, delta_h, middle_h
-
-    def forward_layer_check(self, x, t, index=None, t_edit=400, hs_coeff=(1.0, 1.0), delta_h=None, ignore_timestep=False):
-        assert x.shape[2] == x.shape[3] == self.resolution
-
-        # timestep embedding
-        temb = get_timestep_embedding(t, self.ch)
-        temb = self.temb.dense[0](temb)
-        temb = nonlinearity(temb)
-        temb = self.temb.dense[1](temb)
-        cnt = 0
-
-        print(f"{cnt}<-x.shape:{x.shape}")
+        print(f"{cnt} <- x.shape:{x.shape}")
         cnt += 1
 
         # downsampling
         hs = [self.conv_in(x)]
-        print(f"{cnt}<-h.shape:{hs[-1].shape}")
+        print(f"{cnt} <- h.shape:{hs[-1].shape}")
         cnt += 1
         for i_level in range(self.num_resolutions):
             if i_level > 0.1:
-                print(f"{cnt}<-h.shape:{h.shape},i_level:{i_level}")
+                print(f"{cnt} <- h.shape:{h.shape},i_level:{i_level}")
                 cnt += 1
             for i_block in range(self.num_res_blocks):
                 h = self.down[i_level].block[i_block](hs[-1], temb)
@@ -585,10 +560,10 @@ class DDPM(nn.Module):
 
         # middle
         h = hs[-1]
-        print(f"{cnt}<-mid,h.shape:{h.shape}")
+        print(f"{cnt} <- mid, h.shape:{h.shape}")
         cnt += 1
         h = self.mid.block_1(h, temb)
-        print(f"{cnt}<-mid,h.shape:{h.shape}")
+        print(f"{cnt} <- mid, h.shape:{h.shape}")
         cnt += 1
         h = self.mid.attn_1(h)
         h = self.mid.block_2(h, temb)
@@ -663,7 +638,7 @@ class DDPM(nn.Module):
 
         return h, h2, delta_h, middle_h
 
-    def multiple_attr(self, x, t, index=None, maintain=400, rambda=(1.0, 1.0)):
+    def multiple_attr(self, x, t, index=None, maintain=400, rambda=(1.0, 1.0), prune_ratio=0.0):
         assert x.shape[2] == x.shape[3] == self.resolution
 
         # timestep embedding
@@ -742,7 +717,7 @@ class DDPM(nn.Module):
         else:
             return h
 
-    def interpolation2(self, x, t, index=None, maintain=400, alpha=None):
+    def interpolation2(self, x, t, index=None, maintain=400, alpha=None, prune_ratio=0.0):
         assert x.shape[2] == x.shape[3] == self.resolution
 
         # timestep embedding
@@ -816,7 +791,7 @@ class DDPM(nn.Module):
         else:
             return h
 
-    def forward_at(self, x, t, index=None):
+    def forward_at(self, x, t, index=None, prune_ratio=0.0):
         assert x.shape[2] == x.shape[3] == self.resolution
 
         # timestep embedding
@@ -885,7 +860,7 @@ class DDPM(nn.Module):
         else:
             return h
 
-    def forward_global(self, x, t, index=None, maintain=400, direction=None):
+    def forward_global(self, x, t, index=None, maintain=400, direction=None, prune_ratio=0.0):
         assert x.shape[2] == x.shape[3] == self.resolution
 
         # timestep embedding
@@ -959,89 +934,56 @@ class DDPM(nn.Module):
         else:
             return h
 
-# ==================================================
-## Exponential Map code moved to another file
-# ==================================================
-from RiemannianEdit.src.models.ddpm.expomap_v1 import ExponentialMapVanilla, ExponentialMapVanilla2, ExponentialMapTrue
-# from models.ddpm.expomap import ODEExponentialMap
-# from models.ddpm.expomap import HyperScaleExponentialMap
-
-import clip
-import torchvision.transforms as T
-
-class CLIPWrapper(nn.Module):
-    def __init__(self, model_name="ViT-B/16", device="cuda"):
-        super().__init__()
-        self.model, _ = clip.load(model_name, device=device)
-        self.model.eval()
-        self.device = device
-
-        # Normalize transform for CLIP input
-        self.clip_mean = torch.tensor([0.4815, 0.4578, 0.4082], device=device).view(1, 3, 1, 1)
-        self.clip_std = torch.tensor([0.2686, 0.2613, 0.2758], device=device).view(1, 3, 1, 1)
-
-    def normalize(self, img):
-        return (img - self.clip_mean) / self.clip_std
-
-    def encode_image(self, img_tensor):
-        """
-        img_tensor: [B, 3, H, W] float32 in [0, 1] range
-        Returns: [B, 512] CLIP image embeddings
-        """
-        assert img_tensor.shape[1] == 3, "CLIP expects 3-channel RGB images"
-        img_resized = F.interpolate(img_tensor, size=224, mode='bicubic', align_corners=False)
-        img_norm = self.normalize(img_resized)
-        return self.model.encode_image(img_norm)
-
-# Initialization (once)
-device = "cuda" if torch.cuda.is_available() else "cpu"
-clip_encoder = CLIPWrapper("ViT-B/32", device=device)
 
 class RiemannianBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, temb_channels):
-        super(RiemannianBlock, self).__init__()
-
-        # Linear projection to transform latent space into geodesic calculation space
-        self.linear = nn.Linear(in_channels, out_channels)
+    """
+    A DeltaBlock variant that learns a Riemannian geodesic update:
+    1) Projects features and time embedding via 1×1 conv + linear.
+    2) Normalizes via GroupNorm.
+    3) Applies the Riemannian exponential map to compute Δh.
+    """
+    def __init__(self, in_channels, out_channels, temb_channels, num_groups=32, layer_type="conv", fft_seqlen=1024, fft_dtype=torch.bfloat16):
+        super().__init__()
+        self.layer_type = layer_type
+        if layer_type == "flashfft":
+            self.flashfftconv = FlashFFTConv(fft_seqlen, dtype=torch.bfloat16)
+            self.kernel = nn.Parameter(torch.randn(out_channels, fft_seqlen, dtype=torch.float32))
+        else:
+            self.conv_proj = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
+        # Linear layer for the timestep embedding injection
         self.temb_proj = nn.Linear(temb_channels, out_channels)
-        self.norm1 = nn.LayerNorm(out_channels)
+        # GroupNorm over channels (spatial-agnostic)
+        self.norm1 = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, eps=1e-6, affine=True)
+        # ExponentialMap module: true geodesic integration
+        self.exp_map = ExponentialMapTrue(out_channels, temb_channels)
 
-        # # ExponentialMap for accurate geodesic computation
-        # self.exp_map = ExponentialMapVanilla(out_channels, temb_channels)
-        # self.exp_map = ExponentialMap(out_channels, temb_channels, text_dim=512)
-        # self.exp_map = ExponentialMap(out_channels, temb_channels, text_dim=512, clip_model=clip_encoder)
+    def forward(self, h, temb):
+        """
+        Args:
+            h    (torch.Tensor): Input feature map, shape [B, C_in, H, W].
+            temb (torch.Tensor): Timestep embedding, shape [B, temb_channels].
+        Returns:
+            delta_h (torch.Tensor): Geodesic update, shape [B, C_out, H, W].
+        """
+        if self.layer_type == "flashfft":
+            # Collapse spatial dims for FFT conv: [B, C, H, W] -> [B, C, L]
+            B, C, H, W = h.shape
+            h_1d = h.view(B, C, H * W).to(dtype=torch.bfloat16)
+            kernel = self.kernel[:C, :h_1d.shape[-1]].to(dtype=torch.float32, device=h_1d.device)
+            h_proj = self.flashfftconv(h_1d, kernel)
+            h_proj = h_proj.view(B, C, H, W)
+        else:
+            h_proj = self.conv_proj(h)  # [B, C_out, H, W]
 
-        # self.exp_map = ExponentialMapVanilla2(out_channels, temb_channels, text_dim=512) #, clip_model=clip_encoder)
-        self.exp_map = ExponentialMapTrue(out_channels, temb_channels)#, text_dim=512)
+        # Project time embedding and broadcast over spatial dimensions
+        t_proj = self.temb_proj(temb)[:, :, None, None]  # [B, C_out, 1, 1]
 
-        # # Explicitly use ODEExponentialMap
-        # self.exp_map = ODEExponentialMap(out_channels, temb_channels)
-        # self.exp_map = ODEExponentialMap(out_channels, temb_channels, text_dim=512)
-        # self.exp_map = ODEExponentialMap(out_channels, temb_channels, text_dim=512, clip_model=clip_encoder)
+        # Combine and normalize
+        h_comb = h_proj + t_proj                         # [B, C_out, H, W]
+        h_norm = self.norm1(h_comb)                      # GroupNorm across channels
 
-        # Hyperscale
-        # self.exp_map = HyperScaleExponentialMap(out_channels, temb_channels)
-
-    # def forward(self, h, temb):
-    def forward(self, h, temb, text_emb=None):
-        batch_size, channels, height, width = h.shape
-        h_flat = h.view(batch_size, channels, -1).permute(0, 2, 1)  # [batch, height*width, channels]
-
-        # Project input features and temporal embeddings
-        h_proj = self.linear(h_flat)  # [batch, height*width, out_channels]
-        temb_proj = self.temb_proj(temb).unsqueeze(1)  # [batch, 1, out_channels]
-
-        # Apply transformation and normalization
-        h_proj = self.norm1(h_proj + temb_proj)
-
-        # Reshape back to spatial dimensions
-        h_proj = h_proj.permute(0, 2, 1).view(batch_size, -1, height, width)
-
-        # Compute explicit geodesic movement via exponential map
-        delta_h = self.exp_map(h_proj, temb)
-        # delta_h = self.exp_map(h_proj, temb, text_emb=text_emb)
-        # delta_h = self.exp_map(h_proj, temb, text_emb=text_emb, use_geodesic=(text_emb is not None))
-
+        # Compute Riemannian geodesic update Δh
+        delta_h = self.exp_map(h_norm, temb)              # [B, C_out, H, W]
         return delta_h
 
 class DeltaBlock(nn.Module):
@@ -1052,27 +994,28 @@ class DeltaBlock(nn.Module):
         conv_shortcut=False, 
         dropout=0.1, 
         temb_channels=512, 
-        layer_type="conv",
+        layer_type="flashfft", # "conv",
         nheads=1, 
         num_layers=1, 
         dim_feedforward=2048, 
         emb_type="add", 
-        use_midblock=False
+        use_midblock=False,
+        fft_seqlen=1024,
+        fft_dtype=torch.float16
     ):
 
         super().__init__()
-        # self.use_midblock = use_midblock
         self.emb_type = emb_type
-
-        # if use_midblock:
-        #     self.model = UNetMidBlock2DCrossAttn(512, 512, cross_attention_dim=512)
-        # else:
         out_channels = out_channels or in_channels
 
-        # self.mamba_in = Mamba(d_model=in_channels, d_state=32, d_conv=4, expand=4)
-        self.in_layer = nn.Conv2d(512, 512, kernel_size=1, stride=1, padding=0)
-        # self.mamba_out = Mamba(d_model=out_channels, d_state=32, d_conv=4, expand=4)
-        self.out_layer = nn.Conv2d(512, 512, kernel_size=1, stride=1, padding=0)
+        if layer_type == "flashfft":
+            self.in_flashfft = FlashFFTConv(fft_seqlen, dtype=fft_dtype) # torch.float32)
+            self.in_kernel = nn.Parameter(torch.randn(512, fft_seqlen, dtype=torch.float32))
+            self.out_flashfft = FlashFFTConv(fft_seqlen, dtype=fft_dtype) #torch.float32)
+            self.out_kernel = nn.Parameter(torch.randn(512, fft_seqlen, dtype=torch.float32))
+        else:
+            self.in_layer = nn.Conv2d(512, 512, kernel_size=1, stride=1, padding=0)
+            self.out_layer = nn.Conv2d(512, 512, kernel_size=1, stride=1, padding=0)
 
         self.temb_proj = nn.Linear(temb_channels, out_channels)
         self.norm2 = Normalize(out_channels)
@@ -1081,21 +1024,17 @@ class DeltaBlock(nn.Module):
         if self.emb_type == "adagn":
             self.adagn = AdaGroupNorm(embedding_dim=512, out_dim=512, num_groups=32)
 
-        # Explicit Riemannian Block at the end
-        self.riemannian_block = RiemannianBlock(out_channels, out_channels, temb_channels)
+        self.riemannian_block = RiemannianBlock(out_channels, out_channels, temb_channels, layer_type=layer_type, fft_seqlen=fft_seqlen, fft_dtype=fft_dtype)
 
-    # def forward(self, x, temb=None):
     def forward(self, x, temb=None, text_emb=None):
-        # if self.use_midblock:
-        #     return self.model(x, temb)
-
-        h = self.in_layer(x)
-
-        # batch, channels, height, width = x.shape
-
-        # Input projection
-        # h_flat = x.view(batch, channels, height * width).permute(0, 2, 1)
-        # h = self.mamba_in(h_flat).permute(0, 2, 1).view(batch, channels, height, width)
+        if hasattr(self, "in_flashfft"):
+            B, C, H, W = x.shape
+            x_1d = x.view(B, C, H * W).to(dtype=torch.bfloat16)
+            kernel = self.in_kernel[:C, :x_1d.shape[-1]].to(device=x_1d.device, dtype=torch.float32)
+            h = self.in_flashfft(x_1d, kernel)
+            h = h.view(B, C, H, W)
+        else:
+            h = self.in_layer(x)
 
         # Temporal embedding projection
         if temb is not None:
@@ -1110,16 +1049,18 @@ class DeltaBlock(nn.Module):
 
             h = nonlinearity(h)
 
-        h = self.out_layer(h)
-
-        # Output projection
-        # h_flat = h.view(batch, channels, height * width).permute(0, 2, 1)
-        # h = self.mamba_out(h_flat).permute(0, 2, 1).view(batch, channels, height, width)
+        if hasattr(self, "out_flashfft"):
+            B, C, H, W = h.shape
+            h_1d = h.view(B, C, H * W).to(dtype=torch.bfloat16)
+            kernel = self.out_kernel[:C, :h_1d.shape[-1]].to(device=h_1d.device, dtype=torch.float32)
+            h = self.out_flashfft(h_1d, kernel)
+            h = h.view(B, C, H, W)
+        elif hasattr(self, "out_layer"):
+            h = self.out_layer(h)
 
         delta_h = self.riemannian_block(h, temb)
         # delta_h = self.riemannian_block(h, temb, text_emb=text_emb)
         h = h + delta_h
 
         h = self.final_conv(h)
-
         return h

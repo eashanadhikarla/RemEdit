@@ -699,7 +699,7 @@ class UNetModel(nn.Module):
             # check t_edit 
             if timesteps[0] >= t_edit:
                 # use DeltaBlock
-                if delta_h is None: #Asyrp
+                if delta_h is None: #RemEdit
                     h2 = h * hs_coeff[0]
                     for i in range(index+1):
                         delta_h = getattr(self, f"layer_{i}")(h, None if ignore_timestep else emb)
@@ -739,7 +739,6 @@ class UNetModel(nn.Module):
                 hs_index -= 1
                 h2 = module(h2, emb)
             h2 = h2.type(x.dtype)
-
             h2 = self.out(h2)
 
         for module in self.output_blocks:
@@ -748,9 +747,7 @@ class UNetModel(nn.Module):
         h = h.type(x.dtype)
 
         h = self.out(h)
-        
         return h, h2, delta_h, middle_h
-        
 
 
     def setattr_layers(self, nums):
@@ -760,138 +757,197 @@ class UNetModel(nn.Module):
             for _ in range(self.num_res_blocks):
                 ch = int(mult * self.model_channels)
 
-        for i in range(nums):
+        # for i in range(nums):
             # setattr(self, f"layer_{i}", DeltaBlock(in_channels=ch,
             #                            out_channels=ch,
             #                            temb_channels=self.model_channels * 4,
             #                            dropout=0.0)
             # )
-            setattr(self, f"layer_{i}", DeltaBlock(channels=ch,
-                                       emb_channels=self.model_channels * 4,
-                                       dropout=0.0
-                                       )
+            # setattr(self, f"layer_{i}", DeltaBlock(channels=ch,
+            #                            emb_channels=self.model_channels * 4,
+            #                            dropout=0.0
+            #                            )
+            # )
+        for i in range(nums):
+            setattr(
+                self,
+                f"layer_{i}",
+                DeltaBlock(
+                    in_channels=block_in,
+                    out_channels=block_in,
+                    temb_channels=self.temb_ch,
+                    dropout=0.0,
+                    layer_type=self.db_layer_type,
+                    nheads=self.db_nheads,
+                    num_layers=self.db_num_layers,
+                    dim_feedforward=self.db_dim_feedforward,
+                    emb_type=self.db_emb_type,
+                    # use_midblock=self.use_midblock
+                ),
             )
 
 
-class DeltaBlock(TimestepBlock):
-    """
-    A residual block that can optionally change the number of channels.
-
-    :param channels: the number of input channels.
-    :param emb_channels: the number of timestep embedding channels.
-    :param dropout: the rate of dropout.
-    :param out_channels: if specified, the number of out channels.
-    :param use_conv: if True and out_channels is specified, use a spatial
-        convolution instead of a smaller 1x1 convolution to change the
-        channels in the skip connection.
-    :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param use_checkpoint: if True, use gradient checkpointing on this module.
-    :param up: if True, use this block for upsampling.
-    :param down: if True, use this block for downsampling.
-    """
-
+class DeltaBlock(nn.Module):
     def __init__(
-        self,
-        channels,
-        emb_channels,
-        dropout,
-        out_channels=None,
-        use_conv=False,
-        use_scale_shift_norm=False,
-        dims=2,
-        use_checkpoint=False,
-        up=False,
-        down=False,
+        self, *, 
+        in_channels, 
+        out_channels=None, 
+        conv_shortcut=False, 
+        dropout=0.1, 
+        temb_channels=512, 
+        layer_type="conv",
+        nheads=1, 
+        num_layers=1, 
+        dim_feedforward=2048, 
+        emb_type="add", 
+        use_midblock=False
     ):
+
+class CLIPWrapper(nn.Module):
+    def __init__(self, model_name="ViT-B/16", device="cuda"):
         super().__init__()
-        self.channels = channels
-        self.emb_channels = emb_channels
-        self.dropout = dropout
-        self.out_channels = out_channels or channels
-        self.use_conv = use_conv
-        self.use_checkpoint = use_checkpoint
-        self.use_scale_shift_norm = use_scale_shift_norm
+        self.model, _ = clip.load(model_name, device=device)
+        self.model.eval()
+        self.device = device
 
-        self.in_layers = nn.Sequential(
-            normalization(channels),
-            nn.SiLU(),
-            conv_nd(dims, channels, self.out_channels, 1, padding=0),
-        )
+        # Normalize transform for CLIP input
+        self.clip_mean = torch.tensor([0.4815, 0.4578, 0.4082], device=device).view(1, 3, 1, 1)
+        self.clip_std = torch.tensor([0.2686, 0.2613, 0.2758], device=device).view(1, 3, 1, 1)
 
-        self.emb_layers = nn.Sequential(
-            nn.SiLU(),
-            linear(
-                emb_channels,
-                2 * self.out_channels if use_scale_shift_norm else self.out_channels,
-            ),
-        )
-        self.out_layers = nn.Sequential(
-            normalization(self.out_channels),
-            nn.SiLU(),
-            nn.Dropout(p=dropout),
-            conv_nd(dims, self.out_channels, self.out_channels, 1, padding=0)
-            ,
-        )
+    def normalize(self, img):
+        return (img - self.clip_mean) / self.clip_std
+
+    def encode_image(self, img_tensor):
+        """
+        img_tensor: [B, 3, H, W] float32 in [0, 1] range
+        Returns: [B, 512] CLIP image embeddings
+        """
+        assert img_tensor.shape[1] == 3, "CLIP expects 3-channel RGB images"
+        img_resized = F.interpolate(img_tensor, size=224, mode='bicubic', align_corners=False)
+        img_norm = self.normalize(img_resized)
+        return self.model.encode_image(img_norm)
+
+# Initialization (once)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+clip_encoder = CLIPWrapper("ViT-B/32", device=device)
+
+class RiemannianBlock(nn.Module):
+    """
+    A DeltaBlock variant that learns a Riemannian geodesic update:
+    1) Projects features and time embedding via 1×1 conv + linear.
+    2) Normalizes via GroupNorm.
+    3) Applies the Riemannian exponential map to compute Δh.
+    """
+    def __init__(self, in_channels, out_channels, temb_channels, num_groups=32):
+        super().__init__()
+        # 1×1 convolution to project input features to the geodesic space
+        self.conv_proj = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
+        # Linear layer for the timestep embedding injection
+        self.temb_proj = nn.Linear(temb_channels, out_channels)
+        # GroupNorm over channels (spatial-agnostic)
+        self.norm1 = nn.GroupNorm(num_groups=num_groups, num_channels=out_channels, eps=1e-6, affine=True)
+        # ExponentialMap module: true geodesic integration
+        self.exp_map = ExponentialMapTrue(out_channels, temb_channels)
+
+    def forward(self, h, temb):
+        """
+        Args:
+            h    (torch.Tensor): Input feature map, shape [B, C_in, H, W].
+            temb (torch.Tensor): Timestep embedding, shape [B, temb_channels].
+        Returns:
+            delta_h (torch.Tensor): Geodesic update, shape [B, C_out, H, W].
+        """
+        # Project spatial features via 1×1 conv
+        h_proj = self.conv_proj(h)  # [B, C_out, H, W]
+
+        # Project time embedding and broadcast over spatial dimensions
+        t_proj = self.temb_proj(temb)[:, :, None, None]  # [B, C_out, 1, 1]
+
+        # Combine and normalize
+        h_comb = h_proj + t_proj                         # [B, C_out, H, W]
+        h_norm = self.norm1(h_comb)                      # GroupNorm across channels
+
+        # Compute Riemannian geodesic update Δh
+        delta_h = self.exp_map(h_norm, temb)              # [B, C_out, H, W]
+        return delta_h
 
 
-    def forward(self, x, emb=None):
-        h = self.in_layers(x)
-        if emb is not None:
-            emb_out = self.emb_layers(emb).type(h.dtype)
-            while len(emb_out.shape) < len(h.shape):
-                emb_out = emb_out[..., None]
-        if self.use_scale_shift_norm:
-            out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
-            if emb is not None:
-                scale, shift = th.chunk(emb_out, 2, dim=1)
-                h = out_norm(h) * (1 + scale) + shift
-            h = out_rest(h)
-        else:
-            if emb is not None:
-                h = h + emb_out 
-            h = self.out_layers(h)
+class DeltaBlock(nn.Module):
+    def __init__(
+        self, *, 
+        in_channels, 
+        out_channels=None, 
+        conv_shortcut=False, 
+        dropout=0.1, 
+        temb_channels=512, 
+        layer_type="conv",
+        nheads=1, 
+        num_layers=1, 
+        dim_feedforward=2048, 
+        emb_type="add", 
+        use_midblock=False
+    ):
+
+        super().__init__()
+        # self.use_midblock = use_midblock
+        self.emb_type = emb_type
+
+        # if use_midblock:
+        #     self.model = UNetMidBlock2DCrossAttn(512, 512, cross_attention_dim=512)
+        # else:
+        out_channels = out_channels or in_channels
+
+        # self.mamba_in = Mamba(d_model=in_channels, d_state=32, d_conv=4, expand=4)
+        self.in_layer = nn.Conv2d(512, 512, kernel_size=1, stride=1, padding=0)
+        # self.mamba_out = Mamba(d_model=out_channels, d_state=32, d_conv=4, expand=4)
+        self.out_layer = nn.Conv2d(512, 512, kernel_size=1, stride=1, padding=0)
+
+        self.temb_proj = nn.Linear(temb_channels, out_channels)
+        self.norm2 = Normalize(out_channels)
+        self.final_conv = nn.Conv2d(out_channels, out_channels, kernel_size=1)
+
+        if self.emb_type == "adagn":
+            self.adagn = AdaGroupNorm(embedding_dim=512, out_dim=512, num_groups=32)
+
+        # Explicit Riemannian Block at the end
+        self.riemannian_block = RiemannianBlock(out_channels, out_channels, temb_channels)
+
+    # def forward(self, x, temb=None):
+    def forward(self, x, temb=None, text_emb=None):
+        # if self.use_midblock:
+        #     return self.model(x, temb)
+
+        h = self.in_layer(x)
+
+        # batch, channels, height, width = x.shape
+
+        # Input projection
+        # h_flat = x.view(batch, channels, height * width).permute(0, 2, 1)
+        # h = self.mamba_in(h_flat).permute(0, 2, 1).view(batch, channels, height, width)
+
+        # Temporal embedding projection
+        if temb is not None:
+            temb_proj = self.temb_proj(nonlinearity(temb))[:, :, None, None]
+
+            if self.emb_type == "add":
+                h = self.norm2(h + temb_proj)
+            elif self.emb_type == "mult":
+                h = self.norm2(h * temb_proj)
+            elif self.emb_type == "adagn":
+                h = self.adagn(h, temb)
+
+            h = nonlinearity(h)
+
+        h = self.out_layer(h)
+
+        # Output projection
+        # h_flat = h.view(batch, channels, height * width).permute(0, 2, 1)
+        # h = self.mamba_out(h_flat).permute(0, 2, 1).view(batch, channels, height, width)
+
+        delta_h = self.riemannian_block(h, temb)
+        # delta_h = self.riemannian_block(h, temb, text_emb=text_emb)
+        h = h + delta_h
+
+        h = self.final_conv(h)
+
         return h
-
-
-
-# class DeltaBlock(nn.Module):
-#     def __init__(self, *, in_channels, out_channels=None, conv_shortcut=False,
-#                  dropout, temb_channels=512):
-#         super().__init__()
-#         self.in_channels = in_channels
-#         out_channels = in_channels if out_channels is None else out_channels
-#         self.out_channels = out_channels
-#         self.use_conv_shortcut = conv_shortcut
-#         self.conv1 = th.nn.Conv2d(in_channels,
-#                                      out_channels,
-#                                      kernel_size=1,
-#                                      stride=1,
-#                                      padding=0)
-#         self.temb_proj = th.nn.Linear(temb_channels,
-#                                          out_channels)
-#         self.norm2 = self.Normalize(out_channels)
-#         self.conv2 = th.nn.Conv2d(out_channels,
-#                                      out_channels,
-#                                      kernel_size=1,
-#                                      stride=1,
-#                                      padding=0)
-
-#     def Normalize(self, in_channels):
-#         return th.nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
-
-#     def nonlinearity(self, x):
-#         # swish
-#         return x * th.sigmoid(x)
-
-
-#     def forward(self, x, temb):
-#         h = x
-
-#         h = self.conv1(h)
-#         h = h + self.temb_proj(self.nonlinearity(temb))[:, :, None, None]
-
-#         h = self.norm2(h)
-#         h = self.nonlinearity(h)
-#         h = self.conv2(h)
-
-#         return h
