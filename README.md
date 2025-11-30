@@ -1,7 +1,6 @@
 # RemEdit: Efficient Diffusion Editing with Riemannian Geometry  
-### Eashan Adhikarla, Brian D. Davison
+[Eashan Adhikarla](https://eashanadhikarla.github.io/), Brian D. Davison
 
-[![Build Status](https://github.com/eashanadhikarla/RemEdit/actions/workflows/ci.yml/badge.svg)](https://github.com/eashanadhikarla/RemEdit/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/eashanadhikarla/RemEdit?style=flat-square)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-blue?style=flat-square)](#)
 [![Python](https://img.shields.io/badge/python-3.8%2B-green?style=flat-square)](#)
