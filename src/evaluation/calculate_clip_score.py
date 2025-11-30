@@ -287,39 +287,14 @@ def main(original_dir, edited_dir, caption1, caption2):
 def run_experiments():
     experiments = [
         {
-            "name": "authors",
-            "original_dir": "/home/ubuntu/controlbfr/asyrp-extension/src/lib/asyrp/runs/smiling_LC_CelebA_HQ_t999_ninv50_ngen50/test_images/50/original",
-            "edited_dir": "/home/ubuntu/controlbfr/asyrp-extension/src/lib/asyrp/runs/smiling_LC_CelebA_HQ_t999_ninv50_ngen50/test_images/50/edited"
-        },
-        {
-            "name": "exp12_smile",
-            "original_dir": "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp12_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
-            "edited_dir": "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp12_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
-        },
-        {
-            "name": "exp13_4_smile",
-            "original_dir": "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images_ckpt04/40/original",
-            "edited_dir": "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images_ckpt04/40/edited",
-        },
-        {
-            "name": "exp13_3_smile",
-            "original_dir": "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images_ckpt03/40/original",
-            "edited_dir": "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images_ckpt03/40/edited",
-        },
-        {
-            "name" : "exp13b_500_smile",
-            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_500_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
-            "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_500_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
-        },
-        {
             "name" : "exp13b_1000_smile",
-            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
-            "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+            "original_dir" : "./exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir" : "./runs/exp13b_1000_smile/smiling_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
         },
         {
             "name" : "exp14_sad",
-            "original_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp14_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
-            "edited_dir" : "/home/ubuntu/controlbfr/RiemannianEdit/src/runs/exp14_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
+            "original_dir" : "./runs/exp14_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/original",
+            "edited_dir" : "./runs/exp14_sad/sad_LC_CelebA_HQ_t999_ninv50_ngen40/test_images/40/edited",
         }
     ]
 
